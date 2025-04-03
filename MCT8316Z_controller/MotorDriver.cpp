@@ -684,7 +684,7 @@ bool MotorDriver::isValidPulsePeriod(unsigned long period) {
   if (_lastValidPulsePeriod == 0) {
     return true;
   }
-  if (_currentRPM < 500){
+  if (abs(_currentRPM) < 500){
     return true;
   }
 

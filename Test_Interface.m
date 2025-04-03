@@ -20,9 +20,9 @@ write(port,'x',"char");
 
 for num = 1:N
     if num < 2000
-        r(num) = 600;
-    else
         r(num) = -600;
+    else
+        r(num) = 600;
     end
     
     %write(port, 6, "int8");
