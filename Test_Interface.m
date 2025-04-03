@@ -67,7 +67,7 @@ ylim([-512 512])
 xlabel("Time (seconds)")
 ylabel("Command")
 subplot(3,1,3);
-plot(t(1:length(t)-1), 1/T*movmean(diff(yexp),20), t(1:length(t)-1), r(1:length(t)-1))
+plot(t(1:length(t)-1), 1/T*movmean(diff(yexp),100), t(1:length(t)-1), r(1:length(t)-1))
 ylabel("Acceleration (RPM/s)")
 ylim([-1000 1000])
 write(port,'b',"char");
