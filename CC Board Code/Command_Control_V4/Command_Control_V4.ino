@@ -45,6 +45,7 @@ BLECharacteristic targetChar;
 #define CMD_TYPE_TORQUE      0x02
 #define CMD_TYPE_STATUS_REQ  0x03
 
+
 // ---------------------------------------------------------------------------
 // 2. Global Variables
 // ---------------------------------------------------------------------------
@@ -221,6 +222,7 @@ void loop() {
   if (millis() - lastTelemetryMillis >= TELEMETRY_INTERVAL_MS) {
     lastTelemetryMillis = millis();
     sendLocalTelemetry();
+    sendBinaryCommand(CMD_TYPE_STATUS_REQ,0);
   }
 }
 
@@ -287,11 +289,6 @@ void calculateOrientation(float dt) {
 // 7. Control & Communication (Modified Section)
 // ---------------------------------------------------------------------------
 void updateAttitudeControl() {
-  sendBinaryCommand(CMD_TYPE_STATUS_REQ,0);
-  if (initAttitudeControl) {
-      sendBinaryCommand(CMD_TYPE_SPEED,7000);
-      sendBinaryCommand(CMD_TYPE_TORQUE,0);
-  }
   if (!CONTROL_ENABLE) return;
   
   yawError = targetOrientation.yaw - currentOrientation.yaw;
@@ -370,10 +367,11 @@ void handleSerialCommands() {
     //  manualCommandActive = false;
     //}
     if (cmdString.startsWith("TARGET ")) {
-      targetOrientation.roll = cmdString.substring(7).toFloat();
+      targetOrientation.yaw = cmdString.substring(7).toFloat();
       manualCommandActive = false;
-      initAttitudeControl = true;
-
+      sendBinaryCommand(CMD_TYPE_SPEED, 7000);
+      delay(150);
+      sendBinaryCommand(CMD_TYPE_TORQUE, 0);
     }
     else if (cmdString.startsWith("T")) {
       manualCommandActive = true;
@@ -390,9 +388,9 @@ void handleSerialCommands() {
 
 void sendLocalTelemetry() {
   Serial.print("Roll: ");
-  Serial.print(currentOrientation.roll, 1);
+  Serial.print(currentOrientation.yaw, 1);
   Serial.print("° | Target: ");
-  Serial.print(targetOrientation.roll, 1);
+  Serial.print(targetOrientation.yaw, 1);
   Serial.print("° | Torque ");
   Serial.print(currentWheelTorque, 1);
   Serial.print(" | Speed ");
