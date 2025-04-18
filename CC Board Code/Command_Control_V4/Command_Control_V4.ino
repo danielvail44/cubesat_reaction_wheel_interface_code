@@ -18,11 +18,13 @@ const unsigned long LED_BLINK_INTERVAL_MS = 50;
 bool newBLEcommand = false;
 String incoming;
   float ax, ay, az, gx, gy, gz;
-
+  float yaw = 0.0f;
+unsigned long lastYawUpdateTime = 0;
+bool initAttitudeControl = 0;
 #define SERVICE_UUID        "4fafc201-1fb5-459e-8fcc-c5c9c331914b"
 #define CHARACTERISTIC_UUID "beb5483e-36e1-4688-b7f5-ea07361b26a8"
 #define CONTROL_ENABLE true
-#define TARGET_ROLL 0.0f
+#define TARGET_YAW 0.0f
 #define MAX_CONTROL_TORQUE 100.0f
 
 const float ATTITUDE_KP = 50.0f;
@@ -54,7 +56,7 @@ struct Orientation {
 
 
 Orientation currentOrientation = {0.0f, 0.0f, 0.0f};
-Orientation targetOrientation = {TARGET_ROLL, 0.0f, 0.0f};
+Orientation targetOrientation = {0.0f, 0.0f, TARGET_YAW};
 
 unsigned long lastTelemetryMillis = 0;
 unsigned long lastControlMillis = 0;
@@ -66,9 +68,9 @@ float gyroRates[3] = {0.0f, 0.0f, 0.0f};
 float previousRoll = 0.0f;
 float previousPitch = 0.0f;
 
-float rollError = 0.0f;
-float rollErrorIntegral = 0.0f;
-float rollErrorPrevious = 0.0f;
+float yawError = 0.0f;
+float yawErrorIntegral = 0.0f;
+float yawErrorPrevious = 0.0f;
 float commandedTorque = 0.0f;
 
 bool manualCommandActive = true;
@@ -129,7 +131,7 @@ Serial.println("got here");
 
     while (1);
     Serial.println("got here");
-  targetOrientation.roll = TARGET_ROLL;
+  targetOrientation.yaw =TARGET_YAW;
   previousMicros = micros();
   
   pinMode(LED_PIN, OUTPUT);
@@ -197,13 +199,11 @@ void loop() {
     //Will require changes internally to handleSerialCommands to interpret "incoming" rather than the serial port itself
     handleSerialCommands();
   }
-
-  // Main Control Loop
   readIMU();
+
   
   float dt = (micros() - previousMicros) / 1000000.0f;
   previousMicros = micros();
-  calculateOrientation(dt);
   
   if (millis() - lastControlMillis >= (SAMPLE_TIME_S * 1000)) {
     lastControlMillis = millis();
@@ -229,23 +229,41 @@ void loop() {
 // 6. IMU Functions
 // ---------------------------------------------------------------------------
 
+// Global variables (outside of function)
+
 void readIMU() {
   IMU.readAcceleration(ax, ay, az);
   IMU.readGyroscope(gx, gy, gz);
-  
-  gyroRates[0] = gx / 131.0f;
-  gyroRates[1] = gy / 131.0f;
-  gyroRates[2] = gz / 131.0f;
-  
-  float accelRoll = atan2(ay, az) * 57.2958f;
-  float accelPitch = atan2(-ax, 
-                     sqrt(ay*ay + 
-                                   az*az * 57.2958f));
-  
-  currentOrientation.roll = accelRoll;
+
+  // Convert gyroscope raw data to degrees/second
+  gyroRates[0] = gx / 131.0f;  // X
+  gyroRates[1] = gy / 131.0f;  // Y
+  gyroRates[2] = gz / 131.0f;  // Z
+
+  // Estimate roll and pitch from accelerometer
+  float accelRoll  = atan2(ay, az) * 57.2958f;
+  float accelPitch = atan2(-ax, sqrt(ay * ay + az * az)) * 57.2958f;
+
+  // Update roll and pitch
+  currentOrientation.roll  = accelRoll;
   currentOrientation.pitch = accelPitch;
+
+  // Yaw integration
+  unsigned long currentTime = millis();
+  float dt = (currentTime - lastYawUpdateTime) / 1000.0f; // convert ms to seconds
+  lastYawUpdateTime = currentTime;
+
+  float gz_dps = gz / 131.0f;  // Convert gz to deg/sec
+  yaw += gz_dps * dt*150;
+
+  // Normalize yaw to 0–360
+  if (yaw >= 360.0f) yaw -= 360.0f;
+  if (yaw < 0.0f)   yaw += 360.0f;
+
+  currentOrientation.yaw = yaw;
 }
 
+/*
 void calculateOrientation(float dt) {
   if (dt <= 0.0f || dt > 0.1f) dt = SAMPLE_TIME_S;
   
@@ -263,32 +281,34 @@ void calculateOrientation(float dt) {
   currentOrientation.yaw += gyroRates[2] * dt;
   currentOrientation.yaw = fmod(currentOrientation.yaw, 360.0f);
 }
+*/
 
 // ---------------------------------------------------------------------------
 // 7. Control & Communication (Modified Section)
 // ---------------------------------------------------------------------------
 void updateAttitudeControl() {
-  if (manualCommandActive) {
-    sendBinaryCommand(CMD_TYPE_TORQUE, (int16_t)(manualCommandTorque * 100));
-    return;
+  sendBinaryCommand(CMD_TYPE_STATUS_REQ,0);
+  if (initAttitudeControl) {
+      sendBinaryCommand(CMD_TYPE_SPEED,7000);
+      sendBinaryCommand(CMD_TYPE_TORQUE,0);
   }
-  
   if (!CONTROL_ENABLE) return;
   
-  rollError = targetOrientation.roll - currentOrientation.roll;
-  rollErrorIntegral += rollError * SAMPLE_TIME_S;
-  rollErrorIntegral = constrain(rollErrorIntegral, -100.0f, 100.0f);
+  yawError = targetOrientation.yaw - currentOrientation.yaw;
+  yawErrorIntegral += yawError * SAMPLE_TIME_S;
+  yawErrorIntegral = constrain(yawErrorIntegral, -100.0f, 100.0f);
   
-  float rollErrorDerivative = (rollError - rollErrorPrevious) / SAMPLE_TIME_S;
-  rollErrorPrevious = rollError;
+  float yawErrorDerivative = (yawError - yawErrorPrevious) / SAMPLE_TIME_S;
+  yawErrorPrevious = yawError;
   
-  float pidOutput = ATTITUDE_KP * rollError + 
-                   ATTITUDE_KI * rollErrorIntegral + 
-                   ATTITUDE_KD * rollErrorDerivative;
+  float pidOutput = ATTITUDE_KP * yawError + 
+                   ATTITUDE_KI * yawErrorIntegral + 
+                   ATTITUDE_KD * yawErrorDerivative;
   pidOutput = constrain(pidOutput, -MAX_CONTROL_TORQUE, MAX_CONTROL_TORQUE);
   
   sendBinaryCommand(CMD_TYPE_TORQUE, (int16_t)(pidOutput * 100));
 }
+
 
 // MODIFIED: 5-byte command packets
 void sendBinaryCommand(uint8_t cmdType, int16_t value) {
@@ -352,6 +372,8 @@ void handleSerialCommands() {
     if (cmdString.startsWith("TARGET ")) {
       targetOrientation.roll = cmdString.substring(7).toFloat();
       manualCommandActive = false;
+      initAttitudeControl = true;
+
     }
     else if (cmdString.startsWith("T")) {
       manualCommandActive = true;
@@ -360,6 +382,7 @@ void handleSerialCommands() {
     }
     else if (cmdString.startsWith("S")) {
       manualCommandActive = true;
+      manualCommandTorque = cmdString.substring(2).toFloat();
       manualCommandRPM = cmdString.substring(2).toFloat();
       sendBinaryCommand(CMD_TYPE_SPEED, (int16_t)manualCommandRPM);
     }
@@ -370,8 +393,6 @@ void sendLocalTelemetry() {
   Serial.print(currentOrientation.roll, 1);
   Serial.print("° | Target: ");
   Serial.print(targetOrientation.roll, 1);
-  Serial.print("° | Error: ");
-  Serial.print(rollError, 1);
   Serial.print("° | Torque ");
   Serial.print(currentWheelTorque, 1);
   Serial.print(" | Speed ");
