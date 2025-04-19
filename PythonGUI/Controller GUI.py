@@ -9,6 +9,7 @@ BAUD_RATE = 115200        # Must match the baud rate on your ESP32/Teensy
 # -----------------------------------
 
 # Try to open serial port
+#check gethub update
 try:
     ser = serial.Serial(SERIAL_PORT, BAUD_RATE, timeout=1)
     print(f"Connected to {SERIAL_PORT} at {BAUD_RATE} baud.")
