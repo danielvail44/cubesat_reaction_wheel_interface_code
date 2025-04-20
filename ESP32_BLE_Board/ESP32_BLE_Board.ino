@@ -31,15 +31,14 @@ class MyServerCallbacks: public BLEServerCallbacks {
 
 class TelemetryCharacteristicCallbacks: public BLECharacteristicCallbacks {
   void onWrite(BLECharacteristic* pCharacteristic) {
-    // When Nano writes telemetry data, forward it to PC
     String value = pCharacteristic->getValue();
     if (value.length() > 0) {
-      Serial.print("TELEMETRY:");  // Prefix to distinguish telemetry data
-      // Send raw bytes to PC
+      Serial.print("TELEMETRY:");
+      // Forward raw bytes after the TELEMETRY: prefix
       for (int i = 0; i < value.length(); i++) {
         Serial.write(value[i]);
       }
-      Serial.println();  // End of telemetry packet
+      Serial.print('\n');  // Add newline directly
     }
   }
 };
