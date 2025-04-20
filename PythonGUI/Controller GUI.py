@@ -1,12 +1,27 @@
 import tkinter as tk
 import serial
 import time
+import threading
 import serial.tools.list_ports
 
 # ---------- Configuration ----------
-SERIAL_PORT = "/dev/cu.usbserial-1420"      # Change this to your actual port (e.g., "/dev/ttyUSB0" for Linux)
+SERIAL_PORT = "COM18"      # Change this to your actual port (e.g., "/dev/ttyUSB0" for Linux)
 BAUD_RATE = 115200        # Must match the baud rate on your ESP32/Teensy
 # -----------------------------------
+
+def task(name):
+    while True:
+        try:
+            data = ser.readline().decode('utf-8').strip()
+            if data:
+                print(data)
+        except serial.SerialException as e:
+            print(f"Error: {e}")
+            break
+        except KeyboardInterrupt:
+             print("Exiting...")
+             break
+
 
 # Try to open serial port
 #check gethub update
@@ -21,7 +36,7 @@ except serial.SerialException as e:
 def send_command(cmd):
     if ser and ser.is_open:
         ser.write(f"{cmd}\n".encode())
-        print(f"Sent: {cmd}")
+        #print(f"Sent: {cmd}")
     else:
         print("Serial port is not open.")
 
@@ -35,9 +50,9 @@ btn_size = {"width": 10, "height": 2}
 
 # Layout
 tk.Label(root, text="Controls\nEach Send Overrides Previous Commands", font=("Arial", 16, "bold")).grid(row=0, column=2, pady=10)
-tk.Label(root, text="Desired Angle\n (Degrees)", font=("Arial", 16, "bold")).grid(row=1, column=3, pady=10)
+tk.Label(root, text="Set Rate\n (Rotations/s)", font=("Arial", 16, "bold")).grid(row=1, column=3, pady=10)
 tk.Label(root, text="Desired Torque\n (-1 to 1)", font=("Arial", 16, "bold")).grid(row=1, column=2, pady=10)
-tk.Label(root, text="Desired Speed\n (400 to 15000)", font=("Arial", 16, "bold")).grid(row=1, column=1, pady=10)
+tk.Label(root, text="Desired Speed\n (500 to 15000)", font=("Arial", 16, "bold")).grid(row=1, column=1, pady=10)
 
 input_fieldA = tk.Entry(root, width=10)
 input_fieldA.grid(row=2, column=3)
@@ -57,9 +72,24 @@ send_buttonT.grid(row=3, column=2)
 send_buttonS = tk.Button(root, text="Send", command=lambda: send_command("S "+input_fieldS.get()))
 send_buttonS.grid(row=3, column=1)
 
-# Start GUI loop
-root.mainloop()
+send_buttonL = tk.Button(root, text="Left", command=lambda: send_command("TARGET "+ "1"))
+send_buttonL.grid(row=2, column=4)
 
+send_buttonR = tk.Button(root, text="Right", command=lambda: send_command("TARGET "+ "-1"))
+send_buttonR.grid(row=4, column=4)
+
+send_buttonC = tk.Button(root, text="Stop", command=lambda: send_command("TARGET "+ "0"))
+send_buttonC.grid(row=3, column=4)
+
+
+
+
+# Start GUI loop
+
+
+thread1 = threading.Thread(target=task, args=("First",))
+thread1.start()
+root.mainloop()
 # Close serial port on exit
 if ser and ser.is_open:
     ser.close()

@@ -56,20 +56,22 @@ end
 
 t = (0:N-1)*T;
 
-% plot task 1 results
+%% plot task 1 results
 subplot(3,1,1)
-plot( t, yexp, t, r)
+plot( t, yexp)
 xlabel("Time (seconds)")
 ylabel("Speed (RPM)")
 subplot(3,1,2)
-plot(t, u)
+plot(t, movmean(u, 10))
 ylim([-512 512])
 xlabel("Time (seconds)")
 ylabel("Command")
 subplot(3,1,3);
-plot(t(1:length(t)-1), 1/T*movmean(diff(yexp),100), t(1:length(t)-1), r(1:length(t)-1))
+plot(t(1:length(t)-1), 1/T*movmean(diff(yexp),150), t(1:length(t)-1), r(1:length(t)-1))
 ylabel("Acceleration (RPM/s)")
 ylim([-1000 1000])
+xlim([2 48])
+%%
 write(port,'b',"char");
 pause(1);
 write(port,'r',"char");

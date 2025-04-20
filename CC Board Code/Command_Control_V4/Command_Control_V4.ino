@@ -8,12 +8,17 @@
 #include "ArduinoBLE.h"
 #include <Arduino_LSM6DS3.h>
 
+#define TELEMETRY_CHAR_UUID "aeb5483e-36e1-4688-b7f5-ea07361b26a9"  // For sending telemetry
+
+BLECharacteristic telemetryChar;  // Add this alongside targetChar
+bool telemetryCharAvailable = false;
+
 // ---------------------------------------------------------------------------
 // 1. Pin Definitions and Constants
 // ---------------------------------------------------------------------------
 const int LED_PIN = LED_BUILTIN;
 const unsigned long TELEMETRY_INTERVAL_MS = 1000;
-const float SAMPLE_TIME_S = 0.01f;
+const float SAMPLE_TIME_S = 0.10f;
 const unsigned long LED_BLINK_INTERVAL_MS = 50;
 bool newBLEcommand = false;
 String incoming;
@@ -25,11 +30,11 @@ bool initAttitudeControl = 0;
 #define CHARACTERISTIC_UUID "beb5483e-36e1-4688-b7f5-ea07361b26a8"
 #define CONTROL_ENABLE true
 #define TARGET_YAW 0.0f
-#define MAX_CONTROL_TORQUE 100.0f
+#define MAX_CONTROL_TORQUE 3000.0f
 
-const float ATTITUDE_KP = 50.0f;
-const float ATTITUDE_KI = 5.0f;
-const float ATTITUDE_KD = 10.0f;
+const float ATTITUDE_KP = 300.0f;
+const float ATTITUDE_KI = 0.0f;
+const float ATTITUDE_KD = 0.0f;
 const float COMPLEMENTARY_ALPHA = 0.98f;
 
 // BLE Components
@@ -224,6 +229,8 @@ void loop() {
     sendLocalTelemetry();
     sendBinaryCommand(CMD_TYPE_STATUS_REQ,0);
   }
+
+
 }
 
 
@@ -262,7 +269,7 @@ void readIMU() {
   if (yaw >= 360.0f) yaw -= 360.0f;
   if (yaw < 0.0f)   yaw += 360.0f;
 
-  currentOrientation.yaw = yaw;
+  currentOrientation.yaw = gz_dps;
 }
 
 /*
@@ -289,22 +296,81 @@ void calculateOrientation(float dt) {
 // 7. Control & Communication (Modified Section)
 // ---------------------------------------------------------------------------
 void updateAttitudeControl() {
-  if (!CONTROL_ENABLE) return;
+  Serial.println("DEBUG: [updateAttitudeControl] Entry");
+  Serial.print("DEBUG: [updateAttitudeControl] CONTROL_ENABLE=");
+  Serial.println(CONTROL_ENABLE);
+  
+  if (!CONTROL_ENABLE) {
+    Serial.println("DEBUG: [updateAttitudeControl] Control disabled, exiting function");
+    return;
+  }
+  
+  Serial.print("DEBUG: [updateAttitudeControl] Target yaw=");
+  Serial.print(targetOrientation.yaw);
+  Serial.print(", Current yaw=");
+  Serial.println(currentOrientation.yaw);
   
   yawError = targetOrientation.yaw - currentOrientation.yaw;
+  Serial.print("DEBUG: [updateAttitudeControl] Calculated yawError=");
+  Serial.println(yawError);
+  
+  Serial.print("DEBUG: [updateAttitudeControl] Before integration, yawErrorIntegral=");
+  Serial.println(yawErrorIntegral);
+  
   yawErrorIntegral += yawError * SAMPLE_TIME_S;
+  
+  Serial.print("DEBUG: [updateAttitudeControl] After integration (before constraint), yawErrorIntegral=");
+  Serial.println(yawErrorIntegral);
+  
   yawErrorIntegral = constrain(yawErrorIntegral, -100.0f, 100.0f);
   
+  Serial.print("DEBUG: [updateAttitudeControl] After constraint, yawErrorIntegral=");
+  Serial.println(yawErrorIntegral);
+  
+  Serial.print("DEBUG: [updateAttitudeControl] SAMPLE_TIME_S=");
+  Serial.print(SAMPLE_TIME_S);
+  Serial.print(", Previous yaw error=");
+  Serial.println(yawErrorPrevious);
+  
   float yawErrorDerivative = (yawError - yawErrorPrevious) / SAMPLE_TIME_S;
+  
+  Serial.print("DEBUG: [updateAttitudeControl] Calculated yawErrorDerivative=");
+  Serial.println(yawErrorDerivative);
+  
   yawErrorPrevious = yawError;
+  Serial.print("DEBUG: [updateAttitudeControl] Updated yawErrorPrevious=");
+  Serial.println(yawErrorPrevious);
+  
+  Serial.print("DEBUG: [updateAttitudeControl] PID Constants - KP=");
+  Serial.print(ATTITUDE_KP);
+  Serial.print(", KI=");
+  Serial.print(ATTITUDE_KI);
+  Serial.print(", KD=");
+  Serial.println(ATTITUDE_KD);
   
   float pidOutput = ATTITUDE_KP * yawError + 
                    ATTITUDE_KI * yawErrorIntegral + 
                    ATTITUDE_KD * yawErrorDerivative;
+  
+  Serial.print("DEBUG: [updateAttitudeControl] Calculated raw pidOutput=");
+  Serial.println(pidOutput);
+  
   pidOutput = constrain(pidOutput, -MAX_CONTROL_TORQUE, MAX_CONTROL_TORQUE);
   
-  sendBinaryCommand(CMD_TYPE_TORQUE, (int16_t)(pidOutput * 100));
+  Serial.print("DEBUG: [updateAttitudeControl] After constraint, pidOutput=");
+  Serial.print(pidOutput);
+  Serial.print(", MAX_CONTROL_TORQUE=±");
+  Serial.println(MAX_CONTROL_TORQUE);
+  
+  int16_t scaledOutput = (int16_t)(pidOutput * 10);
+  Serial.print("DEBUG: [updateAttitudeControl] Scaled output for command=");
+  Serial.println(scaledOutput);
+  
+  sendBinaryCommand(CMD_TYPE_TORQUE, scaledOutput);
+  
+  Serial.println("DEBUG: [updateAttitudeControl] Exit");
 }
+
 
 
 // MODIFIED: 5-byte command packets
@@ -369,9 +435,6 @@ void handleSerialCommands() {
     if (cmdString.startsWith("TARGET ")) {
       targetOrientation.yaw = cmdString.substring(7).toFloat();
       manualCommandActive = false;
-      sendBinaryCommand(CMD_TYPE_SPEED, 7000);
-      delay(150);
-      sendBinaryCommand(CMD_TYPE_TORQUE, 0);
     }
     else if (cmdString.startsWith("T")) {
       manualCommandActive = true;

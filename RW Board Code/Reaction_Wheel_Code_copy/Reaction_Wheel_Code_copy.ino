@@ -123,6 +123,10 @@ void setup() {
   
   // Set default motor inertia for torque calculations
   motor.setMotorInertia(DEFAULT_MOTOR_INERTIA);
+
+  motor.setTorqueMode(true);
+  motor.enablePID(true);
+  motor.start();
   
   // Configure timer interrupt for experiment sampling
   zt4.configure(TC_CLOCK_PRESCALER_DIV16,   // prescaler
@@ -568,23 +572,23 @@ void processCommandPacket() {
 
     switch (packet[1]) {
       case CMD_TYPE_SPEED:
-        motor.setTorqueMode(false);
+        if(motor.isTorqueMode()){
+          motor.setTorqueMode(false);
+        }
         motor.setTargetRPM(value);
-        motor.enablePID(true);
         Serial.print("UART: speed to ");
         Serial.print(value);
         Serial.println(" RPM");
-        motor.start();
         break;
 
       case CMD_TYPE_TORQUE:
-        motor.setTorqueMode(true);
-        motor.setTargetTorque(value / 10.0); // Assume command is in deci-mNm
-        motor.enablePID(true);
+        if(!motor.isTorqueMode()){
+          motor.setTorqueMode(true);
+        }
+        motor.setTargetTorque(value);
         Serial.print("UART: Set target torque to ");
-        Serial.print(value / 10.0, 2);
+        Serial.print(value, 2);
         Serial.println(" mNm");
-        motor.start();
         break;
 
       case CMD_TYPE_STATUS_REQ:
