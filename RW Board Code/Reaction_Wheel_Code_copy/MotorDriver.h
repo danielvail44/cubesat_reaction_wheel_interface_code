@@ -118,11 +118,21 @@ private:
   int _minSpeed;
   int _rawRPM;
   
+  // Region-specific PID parameters
+  float _kp_low, _ki_low, _kd_low;
+  
+  // Hysteresis control variables
+  bool _inZeroRegion;
+  float _lastOutput;
+  
+  // Recent values for median filtering
+  float _recentValues[5];
+  
   // Savitzky-Golay filter variables
   static const int SG_WINDOW_SIZE = 7;  // Must be odd number
   float _sgBuffer[SG_WINDOW_SIZE];
-  int _sgBufferIndex = 0;
-  bool _sgBufferFilled = false;
+  int _sgBufferIndex;
+  bool _sgBufferFilled;
   
   // Savitzky-Golay filter methods
   float savitzkyGolayFilter(float newValue);
@@ -142,6 +152,7 @@ private:
   int _motorPolePairs;
   unsigned long _lastDirChange;
   bool _lastDir;
+  
   // Filter variables and objects
   Biquad *_primaryNotchFilter;
   Biquad *_secondaryNotchFilter;
