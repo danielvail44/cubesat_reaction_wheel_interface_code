@@ -117,7 +117,9 @@ private:
   int _maxSpeed;
   int _minSpeed;
   int _rawRPM;
-  
+  int _firstPulses;
+  bool _lastWantedForward;
+  bool _reportedChange;
   // Savitzky-Golay filter variables
   static const int SG_WINDOW_SIZE = 7;  // Must be odd number
   float _sgBuffer[SG_WINDOW_SIZE];
