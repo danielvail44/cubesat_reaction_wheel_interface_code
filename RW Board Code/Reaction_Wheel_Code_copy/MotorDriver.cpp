@@ -43,9 +43,9 @@ MotorDriver::MotorDriver(uint8_t nSleepPin, uint8_t drvoffPin, uint8_t pwmPin, u
   _lastDir = false;
 
   // Initialize PID variables
-  _kp = 1.2;
-  _ki = 2;
-  _kd = 0.02;
+  _kp = 0.1;
+  _ki = 0;
+  _kd = 0;
   _targetRPM = 0;
   _targetTorque = 0;
   _integral = 0;
@@ -536,6 +536,7 @@ float MotorDriver::getFilteredAcceleration() {
   return savitzkyGolayDerivative();
 }
 
+
 void MotorDriver::setSpeed(int speed) {
   // Constrain speed to valid range
   speed = constrain(speed, _minSpeed, _maxSpeed);
@@ -543,90 +544,121 @@ void MotorDriver::setSpeed(int speed) {
   if (_motorRunning) {
     int outputSpeed = speed;
     
-    // Special handling for zero crossing
-    static bool inZeroCrossing = false;
-    static unsigned long zeroCrossingStartTime = 0;
-    unsigned long currentTime = millis();
+    // Determine what we're trying to do based on speed command
+    bool wantForward = speed > 0;
+    bool wantReverse = speed < 0;
+    bool wantStop = (speed == 0);
     
-    // Detect if we're attempting to cross zero
-    bool attemptingZeroCrossing = false;
-    if ((_currentRPM > 10 && speed < -30) || (_currentRPM < -10 && speed > 30)) {
-      attemptingZeroCrossing = true;
-      if (!inZeroCrossing) {
-        inZeroCrossing = true;
-        zeroCrossingStartTime = currentTime;
-      }
-    }
+    // Determine current state
+    bool movingForward = _currentRPM > 5;
+    bool movingReverse = _currentRPM < -5;
+    bool almostStopped = abs(_currentRPM) <= 30;
     
-    // Exit zero crossing state after timeout or successful crossing
-    if (inZeroCrossing) {
-      if ((currentTime - zeroCrossingStartTime) > 500 || // Timeout
-          (speed > 0 && _currentRPM > 100) || // Successfully crossed to positive
-          (speed < 0 && _currentRPM < -100)) { // Successfully crossed to negative
-        inZeroCrossing = false;
-      }
-    }
-    
-    // During zero crossing, use stronger braking
-    if (inZeroCrossing) {
-      int brakeLvl = abs(speed) * 2; // Double the brake strength
-      brakeLvl = constrain(brakeLvl, 0, _maxSpeed);
+    // Direction change detection (either direction)
+    if ((wantForward && movingReverse) || (wantReverse && movingForward)) {
+      // ENHANCED BRAKING: Apply maximum braking force
+      int brakeLvl = 511;  // Maximum brake level for fastest stopping
       
+      // Apply aggressive braking sequence
+      for (int i = 0; i < 3; i++) {  // Apply brake in pulses for better effect
+        // Engage brake at full strength
+        TCC1->CCB[0].reg = brakeLvl;
+        while (TCC1->SYNCBUSY.bit.CC0);
+        TCC0->CCB[0].reg = 0;
+        while (TCC0->SYNCBUSY.bit.CC0);
+        delay(50);  // Hold brake engaged
+        
+        // Brief release to prevent motor from locking
+        TCC1->CCB[0].reg = 0;
+        while (TCC1->SYNCBUSY.bit.CC0);
+        delay(10);
+      }
+      
+      // Final brake application
       TCC1->CCB[0].reg = brakeLvl;
       while (TCC1->SYNCBUSY.bit.CC0);
       TCC0->CCB[0].reg = 0;
       while (TCC0->SYNCBUSY.bit.CC0);
+      delay(100);  // Ensure brake has time to act
       
-      _currentSpeed = speed; // Store the desired speed, not the output
-      return;
-    }
-    
-    // Regular logic for normal operation
-    // Forward acceleration
-    if (speed > 0 && _currentRPM >= -50) { // Changed threshold for smoother transition
-      float scalingFactor = 1.0 - (float)abs(_currentRPM) / 15000.0;
-      scalingFactor = constrain(scalingFactor, 0.3, 1.0);
-      outputSpeed = (int)(outputSpeed * scalingFactor);
-      
-      if (_currentDirection) {
+      // Change direction
+      if (wantForward && _currentDirection != false) {
         setDirection(false);
+        delay(20);
+      } else if (wantReverse && _currentDirection != true) {
+        setDirection(true);
+        delay(20);
       }
       
+      // Release brake
       TCC1->CCB[0].reg = 0;
+      while (TCC1->SYNCBUSY.bit.CC0);
+      
+      // Apply initial power pulse in new direction
+      int initialPulse = 200;  // Strong initial pulse to overcome inertia
+      TCC0->CCB[0].reg = initialPulse;
+      while (TCC0->SYNCBUSY.bit.CC0);
+      delay(30);  // Short pulse duration
+    }
+    // If we're almost stopped and want to go in a direction, apply power
+    else if (almostStopped && (wantForward || wantReverse)) {
+      // Set direction BEFORE applying power
+      if (wantForward && _currentDirection != false) {
+        setDirection(false);
+        delay(15);
+      } else if (wantReverse && _currentDirection != true) {
+        setDirection(true);
+        delay(15);
+      }
+      
+      // Release brake if engaged
+      TCC1->CCB[0].reg = 0;
+      while (TCC1->SYNCBUSY.bit.CC0);
+      
+      // Apply power with initial boost
+      outputSpeed = abs(speed);
+      TCC0->CCB[0].reg = outputSpeed;
+      while (TCC0->SYNCBUSY.bit.CC0);
+    }
+    // Normal forward operation
+    else if (wantForward && (almostStopped || movingForward)) {
+      if (_currentDirection != false) {
+        setDirection(false);
+        delay(10);
+      }
+      
+      float scalingFactor = 1.0 - (float)max(0, _currentRPM) / 15000.0;
+      scalingFactor = constrain(scalingFactor, 0.3, 1.0);
+      outputSpeed = (int)(abs(speed) * scalingFactor);
+      
+      TCC1->CCB[0].reg = 0;  // Ensure brake is released
       while (TCC1->SYNCBUSY.bit.CC0);
       TCC0->CCB[0].reg = outputSpeed;
       while (TCC0->SYNCBUSY.bit.CC0);
     }
-    // Reverse acceleration
-    else if (speed < 0 && _currentRPM <= 50) { // Changed threshold for smoother transition
-      float scalingFactor = 1.0 - (float)abs(_currentRPM) / 15000.0;
-      scalingFactor = constrain(scalingFactor, 0.3, 1.0);
-      outputSpeed = (int)(outputSpeed * scalingFactor);
-      
-      if (!_currentDirection) {
+    // Normal reverse operation
+    else if (wantReverse && (almostStopped || movingReverse)) {
+      if (_currentDirection != true) {
         setDirection(true);
+        delay(10);
       }
       
-      TCC1->CCB[0].reg = 0;
+      float scalingFactor = 1.0 - (float)max(0, -_currentRPM) / 15000.0;
+      scalingFactor = constrain(scalingFactor, 0.3, 1.0);
+      outputSpeed = (int)(abs(speed) * scalingFactor);
+      
+      TCC1->CCB[0].reg = 0;  // Ensure brake is released
       while (TCC1->SYNCBUSY.bit.CC0);
-      TCC0->CCB[0].reg = -outputSpeed;
+      TCC0->CCB[0].reg = outputSpeed;
       while (TCC0->SYNCBUSY.bit.CC0);
     }
-    // Braking
+    // Braking (when explicitly requested)
     else {
-      int brakeLvl = abs(speed);
+      int brakeLvl = wantStop ? 250 : abs(speed);  // Stronger default braking
       
-      // Stronger braking near zero for clean stop
-      if (abs(_currentRPM) < 100) {
-        brakeLvl = brakeLvl * 2;
-      } else {
-        float rpmFactor = (float)abs(_currentRPM) / 10000.0;
-        rpmFactor = constrain(rpmFactor, 0.0, 1.0);
-        float baseScaling = 1.5 - 0.5 * rpmFactor;
-        brakeLvl = (int)(brakeLvl * baseScaling);
+      if (abs(_currentRPM) < 50) {
+        brakeLvl = min(brakeLvl, 100);  // Gentle braking at low speeds
       }
-      
-      brakeLvl = constrain(brakeLvl, 0, _maxSpeed);
       
       TCC1->CCB[0].reg = brakeLvl;
       while (TCC1->SYNCBUSY.bit.CC0);
@@ -634,7 +666,7 @@ void MotorDriver::setSpeed(int speed) {
       while (TCC0->SYNCBUSY.bit.CC0);
     }
     
-    _currentSpeed = outputSpeed;
+    _currentSpeed = speed;
   }
 }
 
@@ -642,7 +674,7 @@ void MotorDriver::setSpeed(int speed) {
 
 void MotorDriver::updatePID() {
   unsigned long currentTime = micros();
-  float deltaT = (currentTime - _lastPIDUpdate) / 1000000.0;  // Convert to seconds
+  float deltaT = (currentTime - _lastPIDUpdate) / 1000000.0;
   
   if (!_motorRunning || deltaT <= 0) {
     return;
@@ -662,78 +694,57 @@ void MotorDriver::updatePID() {
     }
   }
   
-  // Special control for near-zero speeds
-  if (abs(_targetRPM) < 50 && abs(_currentRPM) < 50) {
-    // Use simple bang-bang control near zero
-    int pwmValue = 0;
-    
-    if (_currentRPM < _targetRPM - 10) {
-      pwmValue = 40;  // Small forward nudge
-    } else if (_currentRPM > _targetRPM + 10) {
-      pwmValue = -40;  // Small reverse nudge
-    } else {
-      pwmValue = 0;  // In acceptable range, coast
-    }
-    
-    _integral = 0;  // Reset integral to prevent windup
-    _lastError = 0;
-    
-    setSpeed(pwmValue);
-    return;
-  }
-  
   // Calculate error
   float error = _targetRPM - _currentRPM;
   
-  // Reset integral when target crosses zero or during large errors
-  if ((_targetRPM > 0 && _lastError < 0 && error > 0) || 
-      (_targetRPM < 0 && _lastError > 0 && error < 0) || 
-      (abs(_targetRPM) < 100 && abs(_lastError) > 1000)) {
-    _integral = 0;
+  // Special handling for crossing through zero
+  static bool crossingZero = false;
+  static float lastTargetSign = 0;
+  float targetSign = _targetRPM > 0 ? 1 : _targetRPM < 0 ? -1 : 0;
+  
+  // Detect when target changes sign
+  if (lastTargetSign != 0 && targetSign != 0 && lastTargetSign != targetSign) {
+    crossingZero = true;
+    _integral = 0;  // Reset integral for crossing
   }
   
-  // Apply exponential decay to integral term at low speeds
-  if (abs(_targetRPM) < 200) {
-    _integral *= 0.95;
-  } else if (abs(_targetRPM) < 500) {
-    _integral *= 0.98;
+  // Clear crossing flag once we've achieved the right sign
+  if (crossingZero && 
+      ((_targetRPM > 0 && _currentRPM > 50) || 
+       (_targetRPM < 0 && _currentRPM < -50))) {
+    crossingZero = false;
   }
   
-  // Update integral
+  lastTargetSign = targetSign;
+  
+  // PID calculation
   _integral += error * deltaT;
   
-  // Improved integral windup prevention
-  float integralLimit = max(abs(_targetRPM) * 1.5, 1000.0f);
+  // Stronger integral limiting during zero crossing
+  float integralLimit;
+  if (crossingZero) {
+    integralLimit = 2000.0f;  // Higher limit during crossing
+  } else {
+    integralLimit = max(abs(_targetRPM) * 1.5, 1000.0f);
+  }
   _integral = constrain(_integral, -integralLimit, integralLimit);
   
-  // Calculate derivative with smoothing
-  float derivative = 0;
-  if (deltaT > 0) {
-    derivative = (error - _lastError) / deltaT;
-    derivative = constrain(derivative, -10000.0f, 10000.0f);
+  float derivative = deltaT > 0 ? (error - _lastError) / deltaT : 0;
+  derivative = constrain(derivative, -10000.0f, 10000.0f);
+  
+  // Adjust gains for zero crossing
+  float kp = _kp;
+  float ki = _ki;
+  float kd = _kd;
+  
+  if (crossingZero) {
+    kp *= 2.0;  // Increase proportional during crossing
+    ki *= 0.5;  // Decrease integral during crossing
+    kd *= 0.5;  // Decrease derivative during crossing
   }
   
-  // Adaptive PID gains based on speed
-  float speedFactor = min(1.0f, abs(_currentRPM) / 1000.0f);
-  float adaptiveKp = _kp * (0.3f + 0.7f * speedFactor);
-  float adaptiveKi = _ki * (0.1f + 0.9f * speedFactor);
-  float adaptiveKd = _kd * (0.5f + 0.5f * speedFactor);
-  
-  // Calculate control output
-  float output = adaptiveKp * error + adaptiveKi * _integral + adaptiveKd * derivative;
-  
-  // Anti-windup: reduce integral if output is saturated
-  if (abs(output) >= _maxSpeed) {
-    _integral *= 0.9;
-  }
-  
-  // Convert output to PWM value and apply
+  float output = kp * error + ki * _integral + kd * derivative;
   int pwmValue = constrain(output, _minSpeed, _maxSpeed);
-  
-  // Zero dead band
-  if (abs(pwmValue) < 20 && abs(_currentRPM) < 100) {
-    pwmValue = 0;
-  }
   
   _lastError = error;
   setSpeed(pwmValue);
@@ -802,6 +813,7 @@ float MotorDriver::applyFilters(float rawRPM) {
   
   return stage5;
 }
+
 //==============================================================================
 // Speed Measurement and Filtering
 //==============================================================================
@@ -814,28 +826,20 @@ void MotorDriver::processFGOUTpulse() {
     currentPeriod = currentTime - _lastFgPulseTime;
     if (isValidPulsePeriod(currentPeriod)) {
       _rawRPM = (60.0 * 1000000.0) / (currentPeriod * _pulsesPerRevolution);
+      
       if (_rawRPM > 30000) {
         _rawRPM = 0;
       }
-      if (_currentDirection != _lastDir && _lastDirChange - currentTime > 10000) {
-        _lastDir = _currentDirection;
-        _lastDirChange = currentTime;
-        //Serial.println("dirchange");
-      }
-      if (_lastDir && _currentRPM < 210) {
+      
+      // Apply sign based on current direction
+      if (_currentDirection) {  // If direction is reverse (true)
         _rawRPM = -_rawRPM;
       }
     }
-
-
-    // Apply the filtering pipeline
-    //_currentRPM = applyFilters(rawRpm);
-
-    // Remember this period for next comparison
+    
     _lastValidPulsePeriod = currentPeriod;
   }
 
-  // Always update the last pulse time for timeout detection
   _lastFgPulseTime = currentTime;
   _pulseCount++;
 }

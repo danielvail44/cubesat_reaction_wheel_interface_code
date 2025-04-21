@@ -4,7 +4,7 @@
 clc, clear all, close all
 
 % indicate duration of experiment
-experiment_duration_in_seconds = 4;
+experiment_duration_in_seconds = 10;
 
 %% begin serial port session
 
@@ -13,16 +13,18 @@ flush(port);
 
 %% run experiment using specified interval
 T = 0.004;
-N = 3000;
+N = 5000;
 r = zeros(1,N);
 % enter mode 1
 write(port,'x',"char");
 
 for num = 1:N
     if num < 1000
-        r(num) = 600;
+        r(num) = 2000;
+    elseif num < 2500
+        r(num) = -2000;
     else
-        r(num) = -600;
+        r(num) = 2000;
     end
     
     %write(port, 6, "int8");
@@ -63,7 +65,7 @@ subplot(3,1,1)
 plot( t, yexp,t(1:length(t)-1), r(1:length(t)-1))
 xlabel("Time (seconds)")
 ylabel("Speed (RPM)")
-xlim([0 8])
+%xlim([0 8])
 grid on
 subplot(3,1,2)
 plot(t, movmean(u, 10))
