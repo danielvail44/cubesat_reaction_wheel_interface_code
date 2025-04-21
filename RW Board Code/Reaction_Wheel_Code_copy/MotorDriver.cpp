@@ -52,7 +52,7 @@ MotorDriver::MotorDriver(uint8_t nSleepPin, uint8_t drvoffPin, uint8_t pwmPin, u
   _lastError = 0;
   _pidEnabled = false;
   _lastPIDUpdate = 0;
-  _torqueMode = false;
+  _torqueMode = true;
 
   // Filter variables initialization
   _filtersInitialized = false;
@@ -292,104 +292,6 @@ float MotorDriver::getMotorInertia() const {
   return _motorInertia;
 }
 
-void MotorDriver::setSpeed(int speed) {
-  // Constrain speed to valid range
-  speed = constrain(speed, _minSpeed, _maxSpeed);
-  
-  if (_motorRunning) {
-    int outputSpeed = speed;
-    
-    // Forward acceleration (speed > 0 and wheel not spinning backward fast)
-    if (speed > 0 && _currentRPM > -200) {
-      // Linear scaling: reduce power as we approach max speed
-      // Scaling factor goes from 1.0 at 0 RPM to something smaller at high RPM
-      float scalingFactor = 1.0 - (float)abs(_currentRPM) / 15000.0;
-      scalingFactor = constrain(scalingFactor, 0.3, 1.0);  // Never go below 30% power
-      outputSpeed = (int)(speed * scalingFactor);
-      
-      if (_currentDirection) {
-        setDirection(false);
-      }
-      
-      TCC1->CCB[0].reg = 0;  // Disable brake
-      while (TCC1->SYNCBUSY.bit.CC0);
-      TCC0->CCB[0].reg = outputSpeed;
-      while (TCC0->SYNCBUSY.bit.CC0);
-    }
-    // Reverse acceleration (speed < 0 and wheel not spinning forward fast)
-    else if (speed < 0 && _currentRPM < 200) {
-      // Similar logic but for reverse direction
-      float scalingFactor = 1.0 - (float)abs(_currentRPM) / 15000.0;
-      scalingFactor = constrain(scalingFactor, 0.3, 1.0);
-      outputSpeed = (int)(speed * scalingFactor);
-      
-      if (!_currentDirection) {
-        setDirection(true);
-      }
-      
-      TCC1->CCB[0].reg = 0;  // Disable brake
-      while (TCC1->SYNCBUSY.bit.CC0);
-      TCC0->CCB[0].reg = -outputSpeed;  // Negative because of direction
-      while (TCC0->SYNCBUSY.bit.CC0);
-    }
-    // Braking (trying to go opposite to current motion)
-    else {
-      // Calculate brake level based on current speed
-      int brakeLvl = abs(speed);
-      
-      // Apply linear scaling based on current RPM
-      // Higher speed = stronger braking needed
-      float rpmFactor = (float)abs(_currentRPM) / 10000.0;
-      rpmFactor = constrain(rpmFactor, 0.0, 1.0);
-      
-      // Base scaling: more aggressive at low speeds, less aggressive at high speeds
-      float baseScaling = 1.5 - 0.5 * rpmFactor;
-      
-      // Special boost for very low speeds (to overcome static friction)
-      float lowSpeedBoost = 0.0;
-      if (abs(_currentRPM) < 5000) {
-        lowSpeedBoost = 0.5 * (1.0 - abs(_currentRPM) / 5000.0);
-      }
-      
-      // Combine all factors
-      brakeLvl = (int)(brakeLvl * baseScaling * (1.0 + lowSpeedBoost));
-      brakeLvl = constrain(brakeLvl, 0, _maxSpeed);
-      
-      TCC1->CCB[0].reg = brakeLvl;  // Apply brake
-      while (TCC1->SYNCBUSY.bit.CC0);
-      TCC0->CCB[0].reg = 0;  // Disable main PWM
-      while (TCC0->SYNCBUSY.bit.CC0);
-    }
-    
-    // Store the computed speed for reference
-    _currentSpeed = outputSpeed;
-  }
-}// void MotorDriver::setSpeed(int speed) {
-//   // Constrain speed to valid range
-//   speed = constrain(speed, _minSpeed, _maxSpeed);
-//   _currentSpeed = speed;
-
-//   if (_motorRunning) {
-//     // Apply the new speed via PWM
-//     if(speed > 0){
-//       TCC1->CCB[0].reg = 0;
-//       while (TCC1->SYNCBUSY.bit.CC0);
-//       TCC0->CCB[0].reg = _currentSpeed;
-//       while (TCC0->SYNCBUSY.bit.CC0)
-//       ;
-//     }
-//     else{
-//       TCC1->CCB[0].reg = -speed;
-//       while (TCC1->SYNCBUSY.bit.CC0);
-
-//       TCC0->CCB[0].reg = 0;
-//       while (TCC0->SYNCBUSY.bit.CC0)
-//       ;
-//       //Serial.println(-speed/2);
-//     }
-
-//   }
-// }
 
 void MotorDriver::setupBrakePWM() {
   // Step 1: Enable pin multiplexing for the brake pin
@@ -633,71 +535,273 @@ float MotorDriver::savitzkyGolayDerivative() {
 float MotorDriver::getFilteredAcceleration() {
   return savitzkyGolayDerivative();
 }
+
+void MotorDriver::setSpeed(int speed) {
+  // Constrain speed to valid range
+  speed = constrain(speed, _minSpeed, _maxSpeed);
+  
+  if (_motorRunning) {
+    int outputSpeed = speed;
+    
+    // Special handling for zero crossing
+    static bool inZeroCrossing = false;
+    static unsigned long zeroCrossingStartTime = 0;
+    unsigned long currentTime = millis();
+    
+    // Detect if we're attempting to cross zero
+    bool attemptingZeroCrossing = false;
+    if ((_currentRPM > 10 && speed < -30) || (_currentRPM < -10 && speed > 30)) {
+      attemptingZeroCrossing = true;
+      if (!inZeroCrossing) {
+        inZeroCrossing = true;
+        zeroCrossingStartTime = currentTime;
+      }
+    }
+    
+    // Exit zero crossing state after timeout or successful crossing
+    if (inZeroCrossing) {
+      if ((currentTime - zeroCrossingStartTime) > 500 || // Timeout
+          (speed > 0 && _currentRPM > 100) || // Successfully crossed to positive
+          (speed < 0 && _currentRPM < -100)) { // Successfully crossed to negative
+        inZeroCrossing = false;
+      }
+    }
+    
+    // During zero crossing, use stronger braking
+    if (inZeroCrossing) {
+      int brakeLvl = abs(speed) * 2; // Double the brake strength
+      brakeLvl = constrain(brakeLvl, 0, _maxSpeed);
+      
+      TCC1->CCB[0].reg = brakeLvl;
+      while (TCC1->SYNCBUSY.bit.CC0);
+      TCC0->CCB[0].reg = 0;
+      while (TCC0->SYNCBUSY.bit.CC0);
+      
+      _currentSpeed = speed; // Store the desired speed, not the output
+      return;
+    }
+    
+    // Regular logic for normal operation
+    // Forward acceleration
+    if (speed > 0 && _currentRPM >= -50) { // Changed threshold for smoother transition
+      float scalingFactor = 1.0 - (float)abs(_currentRPM) / 15000.0;
+      scalingFactor = constrain(scalingFactor, 0.3, 1.0);
+      outputSpeed = (int)(outputSpeed * scalingFactor);
+      
+      if (_currentDirection) {
+        setDirection(false);
+      }
+      
+      TCC1->CCB[0].reg = 0;
+      while (TCC1->SYNCBUSY.bit.CC0);
+      TCC0->CCB[0].reg = outputSpeed;
+      while (TCC0->SYNCBUSY.bit.CC0);
+    }
+    // Reverse acceleration
+    else if (speed < 0 && _currentRPM <= 50) { // Changed threshold for smoother transition
+      float scalingFactor = 1.0 - (float)abs(_currentRPM) / 15000.0;
+      scalingFactor = constrain(scalingFactor, 0.3, 1.0);
+      outputSpeed = (int)(outputSpeed * scalingFactor);
+      
+      if (!_currentDirection) {
+        setDirection(true);
+      }
+      
+      TCC1->CCB[0].reg = 0;
+      while (TCC1->SYNCBUSY.bit.CC0);
+      TCC0->CCB[0].reg = -outputSpeed;
+      while (TCC0->SYNCBUSY.bit.CC0);
+    }
+    // Braking
+    else {
+      int brakeLvl = abs(speed);
+      
+      // Stronger braking near zero for clean stop
+      if (abs(_currentRPM) < 100) {
+        brakeLvl = brakeLvl * 2;
+      } else {
+        float rpmFactor = (float)abs(_currentRPM) / 10000.0;
+        rpmFactor = constrain(rpmFactor, 0.0, 1.0);
+        float baseScaling = 1.5 - 0.5 * rpmFactor;
+        brakeLvl = (int)(brakeLvl * baseScaling);
+      }
+      
+      brakeLvl = constrain(brakeLvl, 0, _maxSpeed);
+      
+      TCC1->CCB[0].reg = brakeLvl;
+      while (TCC1->SYNCBUSY.bit.CC0);
+      TCC0->CCB[0].reg = 0;
+      while (TCC0->SYNCBUSY.bit.CC0);
+    }
+    
+    _currentSpeed = outputSpeed;
+  }
+}
+
+
+
 void MotorDriver::updatePID() {
   unsigned long currentTime = micros();
   float deltaT = (currentTime - _lastPIDUpdate) / 1000000.0;  // Convert to seconds
+  
+  if (!_motorRunning || deltaT <= 0) {
+    return;
+  }
+  
+  _lastPIDUpdate = currentTime;
+  
+  // Update RPM and acceleration
   _lastRPM = _currentRPM;
   _currentRPM = applyFilters(_rawRPM);
   _currentAcc = (_currentRPM - _lastRPM) / deltaT;
-
-  if (!_motorRunning) {
-    return;
-  }
-
-  // Calculate time delta
-  _lastPIDUpdate = currentTime;
-
+  
+  // Update torque-based target if in torque mode
   if (_torqueMode && deltaT < 0.01) {
     if (abs(_targetRPM + _targetTorque * deltaT) < 15000) {
       _targetRPM = _targetRPM + _targetTorque * deltaT;
     }
   }
-
+  
+  // Special control for near-zero speeds
+  if (abs(_targetRPM) < 50 && abs(_currentRPM) < 50) {
+    // Use simple bang-bang control near zero
+    int pwmValue = 0;
+    
+    if (_currentRPM < _targetRPM - 10) {
+      pwmValue = 40;  // Small forward nudge
+    } else if (_currentRPM > _targetRPM + 10) {
+      pwmValue = -40;  // Small reverse nudge
+    } else {
+      pwmValue = 0;  // In acceptable range, coast
+    }
+    
+    _integral = 0;  // Reset integral to prevent windup
+    _lastError = 0;
+    
+    setSpeed(pwmValue);
+    return;
+  }
+  
   // Calculate error
   float error = _targetRPM - _currentRPM;
-
-  // Reset integral when target crosses zero or when error sign changes dramatically
-  if ((_targetRPM > 0 && _lastError < 0 && error > 0) || (_targetRPM < 0 && _lastError > 0 && error < 0) || (abs(_targetRPM) < 100 && abs(_lastError) > 1000)) {
-    _integral = 0;  // Reset integral when crossing zero or during large transitions
+  
+  // Reset integral when target crosses zero or during large errors
+  if ((_targetRPM > 0 && _lastError < 0 && error > 0) || 
+      (_targetRPM < 0 && _lastError > 0 && error < 0) || 
+      (abs(_targetRPM) < 100 && abs(_lastError) > 1000)) {
+    _integral = 0;
   }
-
-  // Calculate PID terms
+  
+  // Apply exponential decay to integral term at low speeds
+  if (abs(_targetRPM) < 200) {
+    _integral *= 0.95;
+  } else if (abs(_targetRPM) < 500) {
+    _integral *= 0.98;
+  }
+  
+  // Update integral
   _integral += error * deltaT;
-
+  
   // Improved integral windup prevention
-  float integralLimit = max(abs(_targetRPM) * 1.5, 1000.0f);  // Dynamic limit based on target
-  if (_integral > integralLimit) _integral = integralLimit;
-  if (_integral < -integralLimit) _integral = -integralLimit;
-
-  // Calculate derivative term with damping to prevent oscillation
+  float integralLimit = max(abs(_targetRPM) * 1.5, 1000.0f);
+  _integral = constrain(_integral, -integralLimit, integralLimit);
+  
+  // Calculate derivative with smoothing
   float derivative = 0;
   if (deltaT > 0) {
     derivative = (error - _lastError) / deltaT;
-    // Clamp derivative for stability
     derivative = constrain(derivative, -10000.0f, 10000.0f);
   }
-  _lastError = error;
-
+  
+  // Adaptive PID gains based on speed
+  float speedFactor = min(1.0f, abs(_currentRPM) / 1000.0f);
+  float adaptiveKp = _kp * (0.3f + 0.7f * speedFactor);
+  float adaptiveKi = _ki * (0.1f + 0.9f * speedFactor);
+  float adaptiveKd = _kd * (0.5f + 0.5f * speedFactor);
+  
   // Calculate control output
-  float output = _kp * error + _ki * _integral + _kd * derivative;
-
+  float output = adaptiveKp * error + adaptiveKi * _integral + adaptiveKd * derivative;
+  
   // Anti-windup: reduce integral if output is saturated
   if (abs(output) >= _maxSpeed) {
-    _integral *= 0.9;  // Decay integral when saturated
+    _integral *= 0.9;
   }
-
+  
   // Convert output to PWM value and apply
   int pwmValue = constrain(output, _minSpeed, _maxSpeed);
-
-  // Special handling for near-zero targets to prevent chatter
-  if (abs(_targetRPM) < 200 && abs(_currentRPM) < 200) {
+  
+  // Zero dead band
+  if (abs(pwmValue) < 20 && abs(_currentRPM) < 100) {
     pwmValue = 0;
-    _integral *= 0.5;  // Quickly decay integral near zero
   }
-
+  
+  _lastError = error;
   setSpeed(pwmValue);
 }
 
+float MotorDriver::applyFilters(float rawRPM) {
+  // Apply stronger filtering at low speeds
+  static float lowSpeedFiltered = 0;
+  static float ultraLowSpeedFiltered = 0;
+  
+  // Ultra-low speed filter (< 50 RPM)
+  if (abs(rawRPM) < 50) {
+    ultraLowSpeedFiltered = ultraLowSpeedFiltered * 0.95f + rawRPM * 0.05f;
+    rawRPM = ultraLowSpeedFiltered;
+    
+    // Additional median filter for noise rejection
+    static float lastFiveValues[5] = {0};
+    static int index = 0;
+    
+    lastFiveValues[index] = rawRPM;
+    index = (index + 1) % 5;
+    
+    // Simple median of 5 values
+    float sorted[5];
+    memcpy(sorted, lastFiveValues, sizeof(sorted));
+    
+    // Simple bubble sort for 5 elements
+    for (int i = 0; i < 4; i++) {
+      for (int j = 0; j < 4 - i; j++) {
+        if (sorted[j] > sorted[j + 1]) {
+          float temp = sorted[j];
+          sorted[j] = sorted[j + 1];
+          sorted[j + 1] = temp;
+        }
+      }
+    }
+    
+    rawRPM = sorted[2];  // Median value
+  }
+  // Low speed filter (< 200 RPM)
+  else if (abs(rawRPM) < 200) {
+    lowSpeedFiltered = lowSpeedFiltered * 0.8f + rawRPM * 0.2f;
+    rawRPM = lowSpeedFiltered;
+  }
+  
+  // Update notch filter parameters if needed
+  updateNotchFilters(_currentRPM > 0 ? _currentRPM : rawRPM);
+  
+  // Apply multi-stage filtering pipeline
+  float stage1 = _primaryNotchFilter->process(rawRPM);
+  float stage2 = _secondaryNotchFilter->process(stage1);
+  float stage3 = movingAverage(stage2);
+  float stage4 = _lowPassFilter->process(stage3);
+  
+  // Apply additional exponential smoothing
+  static float lastSmoothed = 0;
+  float alpha = _lowPassAlpha;
+  
+  // Use stronger smoothing at low speeds
+  if (abs(stage4) < 100) {
+    alpha = 0.02f;
+  }
+  
+  float stage5 = lastSmoothed * (1 - alpha) + stage4 * alpha;
+  lastSmoothed = stage5;
+  
+  return stage5;
+}
 //==============================================================================
 // Speed Measurement and Filtering
 //==============================================================================
@@ -718,7 +822,7 @@ void MotorDriver::processFGOUTpulse() {
         _lastDirChange = currentTime;
         //Serial.println("dirchange");
       }
-      if (_lastDir & _currentRPM < 210) {
+      if (_lastDir && _currentRPM < 210) {
         _rawRPM = -_rawRPM;
       }
     }
@@ -875,25 +979,6 @@ float MotorDriver::medianFilter(float newValue) {
   return temp[2];
 }
 
-float MotorDriver::applyFilters(float rawRPM) {
-  // Update notch filter parameters if needed
-  updateNotchFilters(_currentRPM > 0 ? _currentRPM : rawRPM);
-
-  // Apply multi-stage filtering pipeline
-  float stage1 = _primaryNotchFilter->process(rawRPM);
-  float stage2 = _secondaryNotchFilter->process(stage1);
-  float stage3 = movingAverage(stage2);
-  float stage4 = _lowPassFilter->process(stage3);
-
-  // Apply additional exponential smoothing
-  static float lastSmoothed = 0;
-  float stage5 = lastSmoothed * (1 - _lowPassAlpha) + stage4 * _lowPassAlpha;
-  lastSmoothed = stage5;
-
-  // Apply median filter
-  //return medianFilter(stage5);
-  return stage4;
-}
 
 void MotorDriver::resetDriver() {
   // Brief pulse on nSLEEP pin for reset
