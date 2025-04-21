@@ -43,10 +43,16 @@ MotorDriver::MotorDriver(uint8_t nSleepPin, uint8_t drvoffPin, uint8_t pwmPin, u
   _lastDirChange = 0;
   _lastDir = false;
 
+
+
   // Initialize PID variables
   _kp = 0.1;
   _ki = 0;
   _kd = 0;
+  _kp_low = 0.3;  // Higher proportional gain for low speeds
+  _ki_low = 0.0;  // Often lower integral gain at low speeds
+  _kd_low = 0.0;  // Often higher derivative gain at low speeds
+
   _targetRPM = 0;
   _targetTorque = 0;
   _integral = 0;
@@ -233,8 +239,8 @@ void MotorDriver::start() {
   _rawRPM = 0;
   _lastValidPulsePeriod = 0;
   _pulseCount = 0;
-  
-  
+
+
   // If currently at zero speed, set to a minimum starting speed
   if (_currentSpeed == 0) {
     _currentSpeed = 50;  // Minimum starting speed
@@ -247,11 +253,13 @@ void MotorDriver::start() {
   int finalSpeed = _currentSpeed;
   for (int i = 0; i < finalSpeed; i += 20) {
     TCC0->CCB[0].reg = i;
-    while (TCC0->SYNCBUSY.bit.CC0);
+    while (TCC0->SYNCBUSY.bit.CC0)
+      ;
     delay(1);
   }
   TCC0->CCB[0].reg = finalSpeed;
-  while (TCC0->SYNCBUSY.bit.CC0);
+  while (TCC0->SYNCBUSY.bit.CC0)
+    ;
 
   // Make sure DRVOFF is LOW (motor enabled)
   digitalWrite(_drvoffPin, LOW);
@@ -357,10 +365,12 @@ void MotorDriver::adjustSpeed(int increment) {
 }
 
 void MotorDriver::setDirection(bool directionCCW) {
+  _lastDir = _currentDirection;
   _currentDirection = directionCCW;
+  _lastDirChange = millis(); // Track when the direction change happened
   writeRegister(CONTROL_REG_7, _currentDirection ? 0x01 : 0x00);
-  //Serial.println("dirswap");
 }
+
 
 void MotorDriver::toggleDirection() {
   if (!_motorRunning) {
@@ -462,14 +472,27 @@ void MotorDriver::setPIDParameters(float kp, float ki, float kd) {
 }
 
 float MotorDriver::setTargetRPM(float targetRPM) {
+  // Add RPM limit (6000 RPM cap)
+  if (targetRPM > 6000.0f) {
+    targetRPM = 6000.0f;
+  } else if (targetRPM < -6000.0f) {
+    targetRPM = -6000.0f;
+  }
+
+
   _targetRPM = targetRPM;
-  //return _currentAcc;
   return _currentSpeed;
 }
 
 float MotorDriver::setTargetTorque(float targetTorque) {
   _targetTorque = targetTorque;
-  //return _rawRPM;
+  // Keep this in setTargetRPM() and setTargetTorque()
+  if (_targetRPM > 6000.0f) {
+    _targetRPM = 6000.0f;
+  } else if (_targetRPM < -6000.0f) {
+    _targetRPM = -6000.0f;
+  }
+
   return _currentSpeed;
 }
 
@@ -552,13 +575,13 @@ float MotorDriver::getFilteredAcceleration() {
 void MotorDriver::setSpeed(int speed) {
   // Constrain speed to valid range
   speed = constrain(speed, _minSpeed, _maxSpeed);
-  
+
   // Log the attempt at direction change
   static bool reportedChange = false;
   static bool lastWantedForward = true;
   bool wantForward = speed > 0;
   bool wantReverse = speed < 0;
-  
+
   // Record direction change attempts for debugging
   if (((lastWantedForward && wantReverse) || (!lastWantedForward && wantForward)) && !reportedChange) {
     Serial.print("Direction change requested at time ");
@@ -572,75 +595,80 @@ void MotorDriver::setSpeed(int speed) {
     reportedChange = false;
   }
   lastWantedForward = wantForward;
-  
+
   if (_motorRunning) {
     // Determine what we want to do based on sign of speed
     bool wantStop = (speed == 0);
-    
+
     // If we want to change direction or stop completely
     if ((wantForward && _currentDirection) || (wantReverse && !_currentDirection) || wantStop) {
       // CRITICAL PATH: Complete shutdown before direction change
-      
+    
       // 1. Cut all power
       TCC0->CCB[0].reg = 0;
-      while (TCC0->SYNCBUSY.bit.CC0);
-      
+      while (TCC0->SYNCBUSY.bit.CC0)
+        ;
+
       // 2. Apply strong braking to ensure motor stops
       TCC1->CCB[0].reg = 511;  // Maximum brake force
-      while (TCC1->SYNCBUSY.bit.CC0);
-      
+      while (TCC1->SYNCBUSY.bit.CC0)
+        ;
+
       // 3. Wait for motor to come to a complete stop
       delay(150);  // Longer delay to ensure complete stop
-      
+
       // 4. Release brake
       TCC1->CCB[0].reg = 0;
-      while (TCC1->SYNCBUSY.bit.CC0);
-      
+      while (TCC1->SYNCBUSY.bit.CC0)
+        ;
+
       // 5. Change direction register directly via SPI (bypass setDirection)
       bool newDirection = wantReverse;  // true for reverse, false for forward
       Serial.print("Writing direction to register: ");
       Serial.println(newDirection ? "CCW" : "CW");
-      
+
       // Direct register write with verification
       bool writeSuccess = false;
       for (int attempts = 0; attempts < 3 && !writeSuccess; attempts++) {
         writeRegister(CONTROL_REG_7, newDirection ? 0x01 : 0x00);
-        
+
         // Verify write succeeded
         SpiResponse resp = readRegisterFull(CONTROL_REG_7);
         writeSuccess = (resp.data == (newDirection ? 0x01 : 0x00));
-        
+
         if (!writeSuccess) {
           Serial.println("Direction register write failed, retrying...");
           delay(5);
         }
       }
-      
+
       if (writeSuccess) {
         _currentDirection = newDirection;
         Serial.println("Direction register write confirmed");
       } else {
         Serial.println("Failed to set direction register after multiple attempts!");
       }
-      
+
       // 6. Wait for direction change to take effect
       delay(50);
-      
+
       // 7. If this is a stop request, we're done
       if (wantStop) {
         return;
       }
-      
+
       // 8. Apply gentle power in new direction
-      int startPower = min(abs(speed)/4, 100);
+      int startPower = min(abs(speed) / 4, 100);
       TCC0->CCB[0].reg = startPower;
-      while (TCC0->SYNCBUSY.bit.CC0);
+      while (TCC0->SYNCBUSY.bit.CC0)
+        ;
       delay(100);
-      
+
       // 9. Ramp up to requested power
       for (int p = startPower; p < abs(speed); p += 50) {
         TCC0->CCB[0].reg = p;
-        while (TCC0->SYNCBUSY.bit.CC0);
+        while (TCC0->SYNCBUSY.bit.CC0)
+          ;
         delay(20);
       }
     }
@@ -648,67 +676,92 @@ void MotorDriver::setSpeed(int speed) {
     else {
       // Release brake if engaged
       TCC1->CCB[0].reg = 0;
-      while (TCC1->SYNCBUSY.bit.CC0);
-      
+      while (TCC1->SYNCBUSY.bit.CC0)
+        ;
+
       // Apply power
       TCC0->CCB[0].reg = abs(speed);
-      while (TCC0->SYNCBUSY.bit.CC0);
+      while (TCC0->SYNCBUSY.bit.CC0)
+        ;
     }
-    
+
     _currentSpeed = speed;
   }
 }
 
 
 
+
+
 void MotorDriver::updatePID() {
   unsigned long currentTime = micros();
   float deltaT = (currentTime - _lastPIDUpdate) / 1000000.0;
-  
-  if (!_motorRunning || deltaT <= 0) {
+
+  if (!_motorRunning || deltaT <= 0 || !_pidEnabled) {
     return;
   }
-  
+
   _lastPIDUpdate = currentTime;
-  
+
   // Update RPM and acceleration
   _lastRPM = _currentRPM;
   _currentRPM = applyFilters(_rawRPM);
   _currentAcc = (_currentRPM - _lastRPM) / deltaT;
-  
+
   // Update torque-based target if in torque mode
   if (_torqueMode && deltaT < 0.01) {
-    if (abs(_targetRPM + _targetTorque * deltaT) < 15000) {
+    if (abs(_targetRPM + _targetTorque * deltaT) < 6000) {  // Add RPM limit here too
       _targetRPM = _targetRPM + _targetTorque * deltaT;
     }
   }
-  
+
   // Calculate error
   float error = _targetRPM - _currentRPM;
-  
+
   // Special handling for crossing through zero
   static bool crossingZero = false;
   static float lastTargetSign = 0;
-  float targetSign = _targetRPM > 0 ? 1 : _targetRPM < 0 ? -1 : 0;
-  
+  float targetSign = _targetRPM > 0 ? 1 : _targetRPM < 0 ? -1
+                                                         : 0;
+
   // Detect when target changes sign
   if (lastTargetSign != 0 && targetSign != 0 && lastTargetSign != targetSign) {
     crossingZero = true;
     _integral = 0;  // Reset integral for crossing
   }
-  
+
   // Clear crossing flag once we've achieved the right sign
-  if (crossingZero && 
-      ((_targetRPM > 0 && _currentRPM > 50) || 
-       (_targetRPM < 0 && _currentRPM < -50))) {
+  if (crossingZero && ((_targetRPM > 0 && _currentRPM > 50) || (_targetRPM < 0 && _currentRPM < -50))) {
     crossingZero = false;
   }
-  
+
   lastTargetSign = targetSign;
-  
+
+  // ADDED: Smooth gain scheduling - transition between 150 and 250 RPM
+  const float TRANSITION_START = 150.0f;
+  const float TRANSITION_END = 250.0f;
+
+  // Calculate blending factor (0.0 at TRANSITION_START, 1.0 at TRANSITION_END)
+  float blendFactor = 0.0f;
+  float absRPM = abs(_currentRPM);
+
+  if (absRPM <= TRANSITION_START) {
+    blendFactor = 0.0f;  // Use low-speed gains completely
+  } else if (absRPM >= TRANSITION_END) {
+    blendFactor = 1.0f;  // Use normal-speed gains completely
+  } else {
+    // Linear interpolation between regions
+    blendFactor = (absRPM - TRANSITION_START) / (TRANSITION_END - TRANSITION_START);
+  }
+
+  // Interpolate between parameter sets
+  float kp = _kp_low + blendFactor * (_kp - _kp_low);
+  float ki = _ki_low + blendFactor * (_ki - _ki_low);
+  float kd = _kd_low + blendFactor * (_kd - _kd_low);
+
   // PID calculation
   _integral += error * deltaT;
-  
+
   // Stronger integral limiting during zero crossing
   float integralLimit;
   if (crossingZero) {
@@ -717,24 +770,20 @@ void MotorDriver::updatePID() {
     integralLimit = max(abs(_targetRPM) * 1.5, 1000.0f);
   }
   _integral = constrain(_integral, -integralLimit, integralLimit);
-  
+
   float derivative = deltaT > 0 ? (error - _lastError) / deltaT : 0;
   derivative = constrain(derivative, -10000.0f, 10000.0f);
-  
+
   // Adjust gains for zero crossing
-  float kp = _kp;
-  float ki = _ki;
-  float kd = _kd;
-  
   if (crossingZero) {
     kp *= 2.0;  // Increase proportional during crossing
     ki *= 0.5;  // Decrease integral during crossing
     kd *= 0.5;  // Decrease derivative during crossing
   }
-  
+
   float output = kp * error + ki * _integral + kd * derivative;
   int pwmValue = constrain(output, _minSpeed, _maxSpeed);
-  
+
   _lastError = error;
   setSpeed(pwmValue);
 }
@@ -743,23 +792,23 @@ float MotorDriver::applyFilters(float rawRPM) {
   // Apply stronger filtering at low speeds
   static float lowSpeedFiltered = 0;
   static float ultraLowSpeedFiltered = 0;
-  
+
   // Ultra-low speed filter (< 50 RPM)
   if (abs(rawRPM) < 50) {
     ultraLowSpeedFiltered = ultraLowSpeedFiltered * 0.95f + rawRPM * 0.05f;
     rawRPM = ultraLowSpeedFiltered;
-    
+
     // Additional median filter for noise rejection
-    static float lastFiveValues[5] = {0};
+    static float lastFiveValues[5] = { 0 };
     static int index = 0;
-    
+
     lastFiveValues[index] = rawRPM;
     index = (index + 1) % 5;
-    
+
     // Simple median of 5 values
     float sorted[5];
     memcpy(sorted, lastFiveValues, sizeof(sorted));
-    
+
     // Simple bubble sort for 5 elements
     for (int i = 0; i < 4; i++) {
       for (int j = 0; j < 4 - i; j++) {
@@ -770,7 +819,7 @@ float MotorDriver::applyFilters(float rawRPM) {
         }
       }
     }
-    
+
     rawRPM = sorted[2];  // Median value
   }
   // Low speed filter (< 200 RPM)
@@ -778,28 +827,28 @@ float MotorDriver::applyFilters(float rawRPM) {
     lowSpeedFiltered = lowSpeedFiltered * 0.8f + rawRPM * 0.2f;
     rawRPM = lowSpeedFiltered;
   }
-  
+
   // Update notch filter parameters if needed
   updateNotchFilters(_currentRPM > 0 ? _currentRPM : rawRPM);
-  
+
   // Apply multi-stage filtering pipeline
   float stage1 = _primaryNotchFilter->process(rawRPM);
   float stage2 = _secondaryNotchFilter->process(stage1);
   float stage3 = movingAverage(stage2);
   float stage4 = _lowPassFilter->process(stage3);
-  
+
   // Apply additional exponential smoothing
   static float lastSmoothed = 0;
   float alpha = _lowPassAlpha;
-  
+
   // Use stronger smoothing at low speeds
   if (abs(stage4) < 100) {
     alpha = 0.02f;
   }
-  
+
   float stage5 = lastSmoothed * (1 - alpha) + stage4 * alpha;
   lastSmoothed = stage5;
-  
+
   return stage5;
 }
 
@@ -814,36 +863,37 @@ void MotorDriver::processFGOUTpulse() {
   if (_lastFgPulseTime > 0) {
     currentPeriod = currentTime - _lastFgPulseTime;
     
-    // ADDED: Guard against overflow/underflow and unrealistic values
-    if (currentPeriod == 0 || currentPeriod > 1000000) {  // Invalid period (>1 second or 0)
-      _lastFgPulseTime = currentTime;
-      _pulseCount++;
-      return;  // Skip this pulse - don't update RPM
-    }
-    
-    if (isValidPulsePeriod(currentPeriod)) {
-      // ADDED: Additional protection against division by very small numbers
-      if (currentPeriod < 100) {  // Unrealistically short period (would give massive RPM)
-        _rawRPM = 0;  // Instead of letting it calculate a huge value
-      } else {
-        // Calculate RPM with bounds checking
-        float calculatedRPM = (60.0 * 1000000.0) / (currentPeriod * _pulsesPerRevolution);
+    // Skip unrealistic values
+    if (currentPeriod > 0 && currentPeriod < 1000000) {
+      // Calculate magnitude of RPM first (direction-neutral)
+      float rpmMagnitude = (60.0 * 1000000.0) / (currentPeriod * _pulsesPerRevolution);
+      
+      // IMPROVED: Direction handling with hysteresis
+      if (isValidPulsePeriod(currentPeriod)) {
+        // Track the time since last direction change
+        unsigned long timeSinceDirectionChange = millis() - _lastDirChange;
         
-        // ADDED: Sanity check on RPM value
-        if (calculatedRPM > 30000) {
-          calculatedRPM = 0;  // Reset if unrealistic
+        // During direction change transition, handle with special care
+        if (timeSinceDirectionChange < 500) { // 500ms transition window
+          // If speed is very low, set RPM to near-zero with correct sign
+          if (rpmMagnitude < 100) {
+            _rawRPM = _currentDirection ? -50 : 50;
+          } else {
+            // Otherwise, gradually transition the RPM direction
+            float directionFactor = _currentDirection ? -1.0 : 1.0;
+            
+            // Blend between old and new direction based on time since change
+            float blend = min(1.0f, timeSinceDirectionChange / 300.0f);
+            _rawRPM = rpmMagnitude * directionFactor * blend;
+          }
+        } else {
+          // Normal operation (no recent direction change)
+          _rawRPM = _currentDirection ? -rpmMagnitude : rpmMagnitude;
         }
         
-        _rawRPM = calculatedRPM;
-      }
-      
-      // Apply sign based on current direction
-      if (_currentDirection) {  // If direction is reverse (true)
-        _rawRPM = -_rawRPM;
+        _lastValidPulsePeriod = currentPeriod;
       }
     }
-    
-    _lastValidPulsePeriod = currentPeriod;
   }
 
   _lastFgPulseTime = currentTime;
@@ -855,23 +905,34 @@ bool MotorDriver::isValidPulsePeriod(unsigned long period) {
   if (_lastValidPulsePeriod == 0) {
     return true;
   }
+  
+  // FIXED: Don't blindly accept any pulse at low speeds
+  // Instead, use a wider acceptable deviation range
+  float deviation = _maxPulseDeviation;
+  
+  // Use a larger allowable deviation at low speeds
   if (abs(_currentRPM) < 500) {
-    return true;
+    deviation = 0.5; // 50% deviation allowed at low speeds
+  } else {
+    deviation = 0.1; // 10% at normal speeds
   }
 
-  // Check if pulse period is too short (possible double-count)
-  if (period < _lastValidPulsePeriod * (1.0 - _maxPulseDeviation)) {
-    return false;
-  }
+  // Only perform checks if we have a valid reference point
+  if (_lastValidPulsePeriod > 0) {
+    // Check if pulse period is too short (possible double-count)
+    if (period < _lastValidPulsePeriod * (1.0 - deviation)) {
+      return false;
+    }
 
-  // Check if pulse period is too long (possible missed pulse)
-  if (period > _lastValidPulsePeriod * (1.0 + _maxPulseDeviation)) {
-    // Special case: if it's almost exactly 2x, likely a missed pulse
-    return false;
+    // Check if pulse period is too long (possible missed pulse)
+    if (period > _lastValidPulsePeriod * (1.0 + deviation)) {
+      return false;
+    }
   }
 
   return true;
 }
+
 
 void MotorDriver::checkPulseTimeout() {
   // Only check when motor is supposed to be running

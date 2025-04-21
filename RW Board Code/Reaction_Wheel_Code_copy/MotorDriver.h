@@ -160,6 +160,7 @@ private:
   
   // PID control variables
   float _kp, _ki, _kd;
+  float _kp_low, _ki_low, _kd_low; // Low-speed PID gains
   float _targetRPM;
   float _targetTorque;
   bool _torqueMode;
