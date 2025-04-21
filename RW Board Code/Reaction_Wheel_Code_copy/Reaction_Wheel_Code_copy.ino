@@ -10,7 +10,7 @@
 // 1. SYSTEM CONSTANTS AND EXPERIMENT SETTINGS
 //==============================================================================
 
-#define N 2000                    // Number of samples in experiment
+#define N 3000                    // Number of samples in experiment
 #define T 0.04                    // Sample period (seconds)
 #define THRESHOLD 12000           // Timer threshold (12MHz clock)
 #define DEFAULT_MOTOR_INERTIA 5.1e-7 // Default motor inertia in kg*m^2
