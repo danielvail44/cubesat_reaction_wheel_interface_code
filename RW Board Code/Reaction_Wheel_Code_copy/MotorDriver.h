@@ -112,12 +112,12 @@ private:
   
   // Motor state
   bool _motorRunning;
-  int _currentSpeed;
+  int32_t _currentSpeed;
   bool _currentDirection;
-  int _maxSpeed;
-  int _minSpeed;
-  int _rawRPM;
-  int _firstPulses;
+  int32_t _maxSpeed;
+  int32_t _minSpeed;
+  int32_t _rawRPM;
+  int32_t _firstPulses;
   bool _lastWantedForward;
   bool _reportedChange;
   // Savitzky-Golay filter variables
@@ -133,15 +133,16 @@ private:
   // Speed measurement variables
   volatile unsigned long _lastFgPulseTime;
   volatile unsigned long _fgPulsePeriod;
-  volatile uint16_t _pulseCount;
+  volatile int32_t _pulseCount;
   volatile float _currentRPM;
   volatile float _currentAcc;
   volatile float _lastRPM;
   unsigned long _lastValidPulsePeriod;
+  unsigned long _lastValidPulseTime;
   unsigned long _pulseTimeout;
   float _maxPulseDeviation;
-  int _pulsesPerRevolution;
-  int _motorPolePairs;
+  int32_t _pulsesPerRevolution;
+  int32_t _motorPolePairs;
   unsigned long _lastDirChange;
   bool _lastDir;
   // Filter variables and objects
@@ -155,7 +156,7 @@ private:
   float _freqMultiplier;
   float _secondaryFreqMultiplier;
   float _rpmHistory[MOVING_AVG_SIZE];  // History buffer for moving average
-  int _historyIndex;
+  int32_t _historyIndex;
   float _lastFilteredValues[5];
   bool _filtersInitialized;
   float _lastFilterUpdateRPM;
@@ -192,9 +193,9 @@ private:
   float _lastEstimatedRPM;
   
   // Advanced acceleration filtering
-  static const int ACC_WINDOW_SIZE = 15;
+  static const int32_t ACC_WINDOW_SIZE = 15;
   float _accelHistory[ACC_WINDOW_SIZE];
-  int _accelHistoryIndex;
+  int32_t _accelHistoryIndex;
   Biquad* _accelLowPass1;     // First stage LP filter
   Biquad* _accelLowPass2;     // Second stage LP filter
   
