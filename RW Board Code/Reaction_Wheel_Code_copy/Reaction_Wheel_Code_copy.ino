@@ -10,11 +10,9 @@
 // 1. SYSTEM CONSTANTS AND EXPERIMENT SETTINGS
 //==============================================================================
 
-#define N 6000                    // Number of samples in experiment
-#define T 0.08                    // Sample period (seconds)
-#define THRESHOLD 24000           // Timer threshold (12MHz clock)
-#define KI 0                      // Integral gain
-#define KP 1                      // Proportional gain
+#define N 2000                    // Number of samples in experiment
+#define T 0.04                    // Sample period (seconds)
+#define THRESHOLD 12000           // Timer threshold (12MHz clock)
 #define DEFAULT_MOTOR_INERTIA 5.1e-7 // Default motor inertia in kg*m^2
 
 // UART communication with Command & Control board
@@ -124,7 +122,7 @@ void setup() {
   // Set default motor inertia for torque calculations
   motor.setMotorInertia(DEFAULT_MOTOR_INERTIA);
 
-  motor.setTorqueMode(true);
+  motor.setTorqueMode(false);
   motor.enablePID(true);
   motor.start();
   

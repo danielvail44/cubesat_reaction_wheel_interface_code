@@ -43,16 +43,16 @@ MotorDriver::MotorDriver(uint8_t nSleepPin, uint8_t drvoffPin, uint8_t pwmPin, u
   _lastDir = false;
 
   // Initialize PID variables
-  _kp = 1;
-  _ki = 1;
-  _kd = 0.01;
+  _kp = 3;
+  _ki = 0;
+  _kd = 0.00;
   _targetRPM = 0;
   _targetTorque = 0;
   _integral = 0;
   _lastError = 0;
   _pidEnabled = false;
   _lastPIDUpdate = 0;
-  _torqueMode = true;
+  _torqueMode = false;
 
   // Filter variables initialization
   _filtersInitialized = false;
