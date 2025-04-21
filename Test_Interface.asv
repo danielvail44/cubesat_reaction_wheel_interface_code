@@ -4,7 +4,7 @@
 clc, clear all, close all
 
 % indicate duration of experiment
-experiment_duration_in_seconds = 15;
+experiment_duration_in_seconds = 10;
 
 %% begin serial port session
 
@@ -20,9 +20,9 @@ write(port,'x',"char");
 
 for num = 1:N
     if num < 1000
-        r(num) = 3000;
+        r(num) = 2000;
     elseif num < 2500
-        r(num) = -3000;
+        r(num) = -2000;
     else
         r(num) = 2000;
     end
@@ -50,39 +50,31 @@ yexp = NaN(1,N);
 pause(experiment_duration_in_seconds)
 % collect experimental data
 for i = 1:N
-    yexp(i) = read(port,1,"int16");
     u(i) = read(port,1,"int16");
-
-
+    yexp(i) = read(port,1,"int16");
 end
 
 % define time grid
 
 t = (0:N-1)*T;
 
-yexp = yexp / 10;
-u = u / 10;
-
 %% plot task 1 results
 %yexp = abs(yexp);
 %r = abs(r);
-% Scale down received values to correct range
-
-
 subplot(3,1,1)
-plot(t, yexp,t(1:length(t)-1), r(1:length(t)-1))
+plot( t, yexp,t(1:length(t)-1), r(1:length(t)-1))
 xlabel("Time (seconds)")
 ylabel("Speed (RPM)")
-ylim([-3000 3000])
+ylim([-5000 5000])
 grid on
 subplot(3,1,2)
 plot(t, movmean(u, 10))
-%ylim([-512 512])
+ylim([-512 512])
 xlabel("Time (seconds)")
 ylabel("Command")
 grid on
 subplot(3,1,3);
-plot(t(1:length(t)-1), 1/T*movmean(diff(yexp),10))
+plot(t(1:length(t)-1), 1/T*movmean(diff(yexp),300))
 ylabel("Acceleration (RPM/s)")
 ylim([-1000 1000])
 grid on

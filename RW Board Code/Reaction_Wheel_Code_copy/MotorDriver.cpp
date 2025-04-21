@@ -1,3 +1,4 @@
+
 // MotorDriver.cpp
 #include "MotorDriver.h"
 
@@ -226,23 +227,34 @@ void MotorDriver::start() {
     return;  // Can't start if there's a fault
   }
 
+  // ADDED: Reset all RPM measurement variables to prevent initial spikes
+  _lastFgPulseTime = 0;
+  _currentRPM = 0;
+  _rawRPM = 0;
+  _lastValidPulsePeriod = 0;
+  _pulseCount = 0;
+  
+  
   // If currently at zero speed, set to a minimum starting speed
   if (_currentSpeed == 0) {
     _currentSpeed = 50;  // Minimum starting speed
   }
 
-  // Reset speed measurement
-  _lastFgPulseTime = 0;
   if (_torqueMode) { _targetRPM = _currentRPM; }
 
-  // Apply PWM signal
-  TCC0->CCB[0].reg = _currentSpeed;
-  while (TCC0->SYNCBUSY.bit.CC0)
-    ;
+  // Apply PWM signal gradually to prevent current spikes
+  // ADDED: Ramp up PWM to prevent initial jolts
+  int finalSpeed = _currentSpeed;
+  for (int i = 0; i < finalSpeed; i += 20) {
+    TCC0->CCB[0].reg = i;
+    while (TCC0->SYNCBUSY.bit.CC0);
+    delay(1);
+  }
+  TCC0->CCB[0].reg = finalSpeed;
+  while (TCC0->SYNCBUSY.bit.CC0);
 
   // Make sure DRVOFF is LOW (motor enabled)
   digitalWrite(_drvoffPin, LOW);
-
 
   _motorRunning = true;
 }
@@ -541,128 +553,105 @@ void MotorDriver::setSpeed(int speed) {
   // Constrain speed to valid range
   speed = constrain(speed, _minSpeed, _maxSpeed);
   
+  // Log the attempt at direction change
+  static bool reportedChange = false;
+  static bool lastWantedForward = true;
+  bool wantForward = speed > 0;
+  bool wantReverse = speed < 0;
+  
+  // Record direction change attempts for debugging
+  if (((lastWantedForward && wantReverse) || (!lastWantedForward && wantForward)) && !reportedChange) {
+    Serial.print("Direction change requested at time ");
+    Serial.print(millis());
+    Serial.print("ms from ");
+    Serial.print(lastWantedForward ? "forward" : "reverse");
+    Serial.print(" to ");
+    Serial.println(wantForward ? "forward" : "reverse");
+    reportedChange = true;
+  } else if (lastWantedForward == wantForward) {
+    reportedChange = false;
+  }
+  lastWantedForward = wantForward;
+  
   if (_motorRunning) {
-    int outputSpeed = speed;
-    
-    // Determine what we're trying to do based on speed command
-    bool wantForward = speed > 0;
-    bool wantReverse = speed < 0;
+    // Determine what we want to do based on sign of speed
     bool wantStop = (speed == 0);
     
-    // Determine current state
-    bool movingForward = _currentRPM > 5;
-    bool movingReverse = _currentRPM < -5;
-    bool almostStopped = abs(_currentRPM) <= 30;
-    
-    // Direction change detection (either direction)
-    if ((wantForward && movingReverse) || (wantReverse && movingForward)) {
-      // ENHANCED BRAKING: Apply maximum braking force
-      int brakeLvl = 511;  // Maximum brake level for fastest stopping
+    // If we want to change direction or stop completely
+    if ((wantForward && _currentDirection) || (wantReverse && !_currentDirection) || wantStop) {
+      // CRITICAL PATH: Complete shutdown before direction change
       
-      // Apply aggressive braking sequence
-      for (int i = 0; i < 3; i++) {  // Apply brake in pulses for better effect
-        // Engage brake at full strength
-        TCC1->CCB[0].reg = brakeLvl;
-        while (TCC1->SYNCBUSY.bit.CC0);
-        TCC0->CCB[0].reg = 0;
-        while (TCC0->SYNCBUSY.bit.CC0);
-        delay(50);  // Hold brake engaged
-        
-        // Brief release to prevent motor from locking
-        TCC1->CCB[0].reg = 0;
-        while (TCC1->SYNCBUSY.bit.CC0);
-        delay(10);
-      }
-      
-      // Final brake application
-      TCC1->CCB[0].reg = brakeLvl;
-      while (TCC1->SYNCBUSY.bit.CC0);
+      // 1. Cut all power
       TCC0->CCB[0].reg = 0;
       while (TCC0->SYNCBUSY.bit.CC0);
-      delay(100);  // Ensure brake has time to act
       
-      // Change direction
-      if (wantForward && _currentDirection != false) {
-        setDirection(false);
-        delay(20);
-      } else if (wantReverse && _currentDirection != true) {
-        setDirection(true);
-        delay(20);
-      }
+      // 2. Apply strong braking to ensure motor stops
+      TCC1->CCB[0].reg = 511;  // Maximum brake force
+      while (TCC1->SYNCBUSY.bit.CC0);
       
-      // Release brake
+      // 3. Wait for motor to come to a complete stop
+      delay(150);  // Longer delay to ensure complete stop
+      
+      // 4. Release brake
       TCC1->CCB[0].reg = 0;
       while (TCC1->SYNCBUSY.bit.CC0);
       
-      // Apply initial power pulse in new direction
-      int initialPulse = 200;  // Strong initial pulse to overcome inertia
-      TCC0->CCB[0].reg = initialPulse;
-      while (TCC0->SYNCBUSY.bit.CC0);
-      delay(30);  // Short pulse duration
-    }
-    // If we're almost stopped and want to go in a direction, apply power
-    else if (almostStopped && (wantForward || wantReverse)) {
-      // Set direction BEFORE applying power
-      if (wantForward && _currentDirection != false) {
-        setDirection(false);
-        delay(15);
-      } else if (wantReverse && _currentDirection != true) {
-        setDirection(true);
-        delay(15);
+      // 5. Change direction register directly via SPI (bypass setDirection)
+      bool newDirection = wantReverse;  // true for reverse, false for forward
+      Serial.print("Writing direction to register: ");
+      Serial.println(newDirection ? "CCW" : "CW");
+      
+      // Direct register write with verification
+      bool writeSuccess = false;
+      for (int attempts = 0; attempts < 3 && !writeSuccess; attempts++) {
+        writeRegister(CONTROL_REG_7, newDirection ? 0x01 : 0x00);
+        
+        // Verify write succeeded
+        SpiResponse resp = readRegisterFull(CONTROL_REG_7);
+        writeSuccess = (resp.data == (newDirection ? 0x01 : 0x00));
+        
+        if (!writeSuccess) {
+          Serial.println("Direction register write failed, retrying...");
+          delay(5);
+        }
       }
       
+      if (writeSuccess) {
+        _currentDirection = newDirection;
+        Serial.println("Direction register write confirmed");
+      } else {
+        Serial.println("Failed to set direction register after multiple attempts!");
+      }
+      
+      // 6. Wait for direction change to take effect
+      delay(50);
+      
+      // 7. If this is a stop request, we're done
+      if (wantStop) {
+        return;
+      }
+      
+      // 8. Apply gentle power in new direction
+      int startPower = min(abs(speed)/4, 100);
+      TCC0->CCB[0].reg = startPower;
+      while (TCC0->SYNCBUSY.bit.CC0);
+      delay(100);
+      
+      // 9. Ramp up to requested power
+      for (int p = startPower; p < abs(speed); p += 50) {
+        TCC0->CCB[0].reg = p;
+        while (TCC0->SYNCBUSY.bit.CC0);
+        delay(20);
+      }
+    }
+    // Normal operation (no direction change)
+    else {
       // Release brake if engaged
       TCC1->CCB[0].reg = 0;
       while (TCC1->SYNCBUSY.bit.CC0);
       
-      // Apply power with initial boost
-      outputSpeed = abs(speed);
-      TCC0->CCB[0].reg = outputSpeed;
-      while (TCC0->SYNCBUSY.bit.CC0);
-    }
-    // Normal forward operation
-    else if (wantForward && (almostStopped || movingForward)) {
-      if (_currentDirection != false) {
-        setDirection(false);
-        delay(10);
-      }
-      
-      float scalingFactor = 1.0 - (float)max(0, _currentRPM) / 15000.0;
-      scalingFactor = constrain(scalingFactor, 0.3, 1.0);
-      outputSpeed = (int)(abs(speed) * scalingFactor);
-      
-      TCC1->CCB[0].reg = 0;  // Ensure brake is released
-      while (TCC1->SYNCBUSY.bit.CC0);
-      TCC0->CCB[0].reg = outputSpeed;
-      while (TCC0->SYNCBUSY.bit.CC0);
-    }
-    // Normal reverse operation
-    else if (wantReverse && (almostStopped || movingReverse)) {
-      if (_currentDirection != true) {
-        setDirection(true);
-        delay(10);
-      }
-      
-      float scalingFactor = 1.0 - (float)max(0, -_currentRPM) / 15000.0;
-      scalingFactor = constrain(scalingFactor, 0.3, 1.0);
-      outputSpeed = (int)(abs(speed) * scalingFactor);
-      
-      TCC1->CCB[0].reg = 0;  // Ensure brake is released
-      while (TCC1->SYNCBUSY.bit.CC0);
-      TCC0->CCB[0].reg = outputSpeed;
-      while (TCC0->SYNCBUSY.bit.CC0);
-    }
-    // Braking (when explicitly requested)
-    else {
-      int brakeLvl = wantStop ? 250 : abs(speed);  // Stronger default braking
-      
-      if (abs(_currentRPM) < 50) {
-        brakeLvl = min(brakeLvl, 100);  // Gentle braking at low speeds
-      }
-      
-      TCC1->CCB[0].reg = brakeLvl;
-      while (TCC1->SYNCBUSY.bit.CC0);
-      TCC0->CCB[0].reg = 0;
+      // Apply power
+      TCC0->CCB[0].reg = abs(speed);
       while (TCC0->SYNCBUSY.bit.CC0);
     }
     
@@ -824,11 +813,28 @@ void MotorDriver::processFGOUTpulse() {
 
   if (_lastFgPulseTime > 0) {
     currentPeriod = currentTime - _lastFgPulseTime;
+    
+    // ADDED: Guard against overflow/underflow and unrealistic values
+    if (currentPeriod == 0 || currentPeriod > 1000000) {  // Invalid period (>1 second or 0)
+      _lastFgPulseTime = currentTime;
+      _pulseCount++;
+      return;  // Skip this pulse - don't update RPM
+    }
+    
     if (isValidPulsePeriod(currentPeriod)) {
-      _rawRPM = (60.0 * 1000000.0) / (currentPeriod * _pulsesPerRevolution);
-      
-      if (_rawRPM > 30000) {
-        _rawRPM = 0;
+      // ADDED: Additional protection against division by very small numbers
+      if (currentPeriod < 100) {  // Unrealistically short period (would give massive RPM)
+        _rawRPM = 0;  // Instead of letting it calculate a huge value
+      } else {
+        // Calculate RPM with bounds checking
+        float calculatedRPM = (60.0 * 1000000.0) / (currentPeriod * _pulsesPerRevolution);
+        
+        // ADDED: Sanity check on RPM value
+        if (calculatedRPM > 30000) {
+          calculatedRPM = 0;  // Reset if unrealistic
+        }
+        
+        _rawRPM = calculatedRPM;
       }
       
       // Apply sign based on current direction
