@@ -215,6 +215,7 @@ private:
   bool writeRegister(uint8_t reg, uint8_t value);
   SpiResponse readRegisterFull(uint8_t reg);
   uint8_t calculateParity(uint16_t command);
+  void debugDirectionControl();
 };
 
 #endif // MOTOR_DRIVER_H

@@ -61,7 +61,7 @@ MotorDriver::MotorDriver(uint8_t nSleepPin, uint8_t drvoffPin, uint8_t pwmPin, u
   _lastError = 0;
   _pidEnabled = true;
   _lastPIDUpdate = 0;
-  _torqueMode = true;
+  _torqueMode = false;
 
   // Filter variables initialization
   _filtersInitialized = false;
@@ -366,11 +366,96 @@ void MotorDriver::adjustSpeed(int increment) {
   setSpeed(newSpeed);
 }
 
+// Add this method to diagnose direction control issues
+void MotorDriver::debugDirectionControl() {
+  // First read the current direction from register
+  SpiResponse dirReg = readRegisterFull(CONTROL_REG_7);
+  Serial.print("Direction Register Value: 0x");
+  Serial.print(dirReg.data, HEX);
+  Serial.print(" (Expected: 0x");
+  Serial.print(_currentDirection ? "01" : "00");
+  Serial.println(")");
+  
+  // Check if our internal state matches register
+  if ((_currentDirection && dirReg.data != 0x01) || 
+      (!_currentDirection && dirReg.data != 0x00)) {
+    Serial.println("WARNING: Direction register mismatch!");
+  }
+  
+  // Read other relevant registers
+  SpiResponse status1 = readRegisterFull(STATUS_REG_1);
+  Serial.print("Status Register 1: 0x");
+  Serial.println(status1.data, HEX);
+  
+  SpiResponse status2 = readRegisterFull(STATUS_REG_2);
+  Serial.print("Status Register 2: 0x");
+  Serial.println(status2.data, HEX);
+}
+
+// Modify setDirection to include more verification and debug
 void MotorDriver::setDirection(bool directionCCW) {
+  // Print current state
+  Serial.print("Current direction: ");
+  Serial.print(_currentDirection ? "CCW" : "CW");
+  Serial.print(", Changing to: ");
+  Serial.println(directionCCW ? "CCW" : "CW");
+  
+  // Save old direction state
   _lastDir = _currentDirection;
-  _currentDirection = directionCCW;
-  _lastDirChange = millis();  // Track when the direction change happened
-  writeRegister(CONTROL_REG_7, _currentDirection ? 0x01 : 0x00);
+  
+  // Only proceed if direction actually changed
+  if (_lastDir != directionCCW) {
+    // Complete stop sequence
+    stop();
+    brake();
+    delay(100);
+    releaseBrake();
+    
+    // Record direction change time
+    _currentDirection = directionCCW;
+    _lastDirChange = millis();
+    
+    // Ensure register write is successful
+    bool writeSuccess = false;
+    for (int attempts = 0; attempts < 5 && !writeSuccess; attempts++) {
+      Serial.print("Writing direction register attempt ");
+      Serial.print(attempts + 1);
+      Serial.print(": value 0x");
+      Serial.println(directionCCW ? "01" : "00");
+      
+      // Write register with longer delay between operations
+      writeRegister(CONTROL_REG_7, directionCCW ? 0x01 : 0x00);
+      delay(10); // Longer delay between write and verify
+      
+      // Verify the write was successful
+      SpiResponse resp = readRegisterFull(CONTROL_REG_7);
+      writeSuccess = (resp.data == (directionCCW ? 0x01 : 0x00));
+      
+      Serial.print("  Read back: 0x");
+      Serial.print(resp.data, HEX);
+      Serial.println(writeSuccess ? " (SUCCESS)" : " (FAILED)");
+      
+      if (!writeSuccess) {
+        delay(20); // Longer delay before retry
+      }
+    }
+    
+    if (!writeSuccess) {
+      Serial.println("ERROR: Failed to set direction register after multiple attempts!");
+    }
+    
+    // Reset measurement variables
+    _lastFgPulseTime = 0;
+    _currentRPM = 0;
+    _rawRPM = 0;
+    _integral = 0;
+    
+    // Wait to ensure direction change takes effect
+    delay(100);
+    
+    // Verify all registers after direction change
+    debugDirectionControl();
+  }
 }
 
 
@@ -483,7 +568,7 @@ float MotorDriver::setTargetRPM(float targetRPM) {
 
 
   _targetRPM = targetRPM;
-  return _currentSpeed;
+  return _rawRPM;
 }
 
 float MotorDriver::setTargetTorque(float targetTorque) {
@@ -619,7 +704,7 @@ void MotorDriver::setSpeed(int speed) {
         ;
 
       // 3. Wait for motor to come to a complete stop
-      delay(250);  // Longer delay to ensure complete stop
+      delay(25);  // Longer delay to ensure complete stop
 
       // 4. Release brake
       TCC1->CCB[0].reg = 0;
@@ -702,11 +787,51 @@ void MotorDriver::updatePID() {
   float deltaT = (currentTime - _lastPIDUpdate) / 1000000.0;
 
   if (!_motorRunning || deltaT <= 0 || !_pidEnabled) {
-    //Serial.println("broke???");
     return;
   }
 
+  // Direction verification (do this before processing PID)
+  static unsigned long lastDirectionCheck = 0;
+  if (millis() - lastDirectionCheck > 1000) {  // Check direction register every second
+    lastDirectionCheck = millis();
+    
+    // Read actual direction register
+    SpiResponse dirReg = readRegisterFull(CONTROL_REG_7);
+    bool registerDirection = (dirReg.data & 0x01) == 0x01;
+    
+    // If mismatch, try to correct it
+    if (registerDirection != _currentDirection) {
+      Serial.println("Direction register mismatch detected! Correcting...");
+      Serial.print("Register value: ");
+      Serial.print(dirReg.data);
+      Serial.print(", Expected: ");
+      Serial.println(_currentDirection ? "1 (CCW)" : "0 (CW)");
+      
+      // Write register with verification
+      bool writeSuccess = false;
+      for (int attempts = 0; attempts < 3 && !writeSuccess; attempts++) {
+        writeRegister(CONTROL_REG_7, _currentDirection ? 0x01 : 0x00);
+        
+        // Verify write
+        SpiResponse verifyResp = readRegisterFull(CONTROL_REG_7);
+        writeSuccess = (verifyResp.data == (_currentDirection ? 0x01 : 0x00));
+        
+        if (!writeSuccess) {
+          Serial.println("Direction correction failed, retrying...");
+          delay(5);
+        }
+      }
+      
+      if (writeSuccess) {
+        Serial.println("Direction register corrected");
+      } else {
+        Serial.println("Failed to correct direction register!");
+      }
+    }
+  }
+
   _lastPIDUpdate = currentTime;
+
 
   // Update RPM and acceleration
   _lastRPM = _currentRPM;
@@ -864,64 +989,114 @@ float MotorDriver::applyFilters(float rawRPM) {
 
 void MotorDriver::processFGOUTpulse() {
   unsigned long currentTime = micros();
-  // DEBUGGING
-
-  if ((_firstPulses) > 0) {
-    // Serial.print("PULSE #");
-    // Serial.print(_pulseCount);
-    // Serial.print(" Time: ");
-    // Serial.print(currentTime);
-    // Serial.print(" Last: ");
-    // Serial.print(_lastFgPulseTime);
-    // Serial.print(" Period: ");
-    // Serial.print(currentTime - _lastFgPulseTime);
-    // Serial.print(" RPM raw: ");
-    // Serial.println(_rawRPM);
-    _firstPulses--;
+  
+  // Direction transition state machine
+  static bool inTransition = false;
+  static unsigned long transitionStartTime = 0;
+  static float lastStableRPM = 0;
+  static int transitionPhase = 0; // 0=pre-stop, 1=stopping, 2=accelerating
+  static unsigned long lastPhaseChange = 0;
+  
+  // Check for direction change request
+  if (millis() - _lastDirChange < 200 && !inTransition) {
+    // Begin transition - capture stable RPM for blending
+    inTransition = true;
+    transitionStartTime = millis();
+    lastStableRPM = _rawRPM;
+    transitionPhase = 0;
+    lastPhaseChange = millis();
+    
+    // Reset validation parameters for clean slate
+    _lastValidPulsePeriod = 0;
+    
+    // Clear filter history to prevent contamination
+    for (int i = 0; i < MOVING_AVG_SIZE; i++) {
+      _rpmHistory[i] = 0;
+    }
+    
+    _integral = 0; // Reset PID integral term
+    Serial.println("Direction transition started");
   }
-
-  unsigned long currentPeriod = 0;
-
+  
+  // During transition, synthesize RPM values instead of using unreliable pulses
+  if (inTransition) {
+    unsigned long currentPhaseTime = millis() - lastPhaseChange;
+    
+    // Phase 0: Pre-stop verification (50ms) - ensure we're actually stopping
+    if (transitionPhase == 0 && currentPhaseTime > 50) {
+      transitionPhase = 1;
+      lastPhaseChange = millis();
+    }
+    // Phase 1: Deceleration to zero (400ms)
+    else if (transitionPhase == 1) {
+      float ratio = max(0.0f, 1.0f - (currentPhaseTime / 400.0f));
+      _rawRPM = lastStableRPM * ratio;
+      
+      // Advance to acceleration phase when close to zero or timeout
+      if (abs(_rawRPM) < 50 || currentPhaseTime > 400) {
+        transitionPhase = 2;
+        lastPhaseChange = millis();
+        _rawRPM = 0; // Force exact zero before changing direction
+      }
+    }
+    // Phase 2: Acceleration in new direction (500ms)
+    else if (transitionPhase == 2) {
+      float ratio = min(1.0f, (currentPhaseTime / 500.0f));
+      
+      // Use sigmoid function for smoother acceleration curve
+      ratio = ratio * ratio * (3 - 2 * ratio); // Smoothstep function
+      
+      // Target speed based on register-set direction only
+      float targetRPM = _currentDirection ? -800 : 800; // Moderate target speed
+      _rawRPM = targetRPM * ratio;
+      
+      // End transition after 500ms or when measuring valid pulses in new direction
+      if (currentPhaseTime > 500) {
+        inTransition = false;
+        Serial.println("Direction transition complete");
+      }
+    }
+    
+    // Skip actual pulse processing during transition
+    _lastFgPulseTime = currentTime;
+    return;
+  }
+  
+  // Normal pulse processing when not in transition
   if (_lastFgPulseTime > 0) {
-    currentPeriod = currentTime - _lastFgPulseTime;
-
-    // Skip unrealistic values
-    if (currentPeriod > 0 && currentPeriod < 1000000) {
-      //_firstPulses = 10;
-      // Calculate magnitude of RPM first (direction-neutral)
-      float rpmMagnitude = (60.0 * 1000000.0) / (currentPeriod * _pulsesPerRevolution);
-      // IMPROVED: Direction handling with hysteresis
-      if (isValidPulsePeriod(currentPeriod)) {
-        // Track the time since last direction change
-        unsigned long timeSinceDirectionChange = millis() - _lastDirChange;
-
-        // During direction change transition, handle with special care
-        if (timeSinceDirectionChange < 500) {  // 500ms transition window
-          // If speed is very low, set RPM to near-zero with correct sign
-          if (rpmMagnitude < 100) {
-            _rawRPM = _currentDirection ? -50 : 50;
-          } else {
-            // Otherwise, gradually transition the RPM direction
-            float directionFactor = _currentDirection ? -1.0 : 1.0;
-            
-            // Blend between old and new direction based on time since change
-            float blend = min(1.0f, timeSinceDirectionChange / 300.0f);
-            _rawRPM = rpmMagnitude * directionFactor * blend;
-          }
+    unsigned long period = currentTime - _lastFgPulseTime;
+    
+    // Only process pulses within reasonable time range
+    if (period > 5000 && period < 1000000) {
+      // Calculate RPM magnitude (always positive)
+      float rpmMagnitude = (60.0 * 1000000.0) / (period * _pulsesPerRevolution);
+      
+      // Apply direction based ONLY on register state
+      float newRPM = _currentDirection ? -rpmMagnitude : rpmMagnitude;
+      
+      // Validate reading more strictly - especially after recent direction change
+      bool isRecentDirectionChange = (millis() - _lastDirChange < 2000);
+      
+      if (_lastValidPulsePeriod == 0 || 
+          (period > _lastValidPulsePeriod * (isRecentDirectionChange ? 0.7 : 0.5) && 
+           period < _lastValidPulsePeriod * (isRecentDirectionChange ? 1.5 : 2.0))) {
+        
+        // After direction change, add stronger filtering at first
+        if (isRecentDirectionChange) {
+          // Apply stronger filtering right after direction change
+          _rawRPM = 0.9 * _rawRPM + 0.1 * newRPM;
         } else {
-          // Normal operation (no recent direction change)
-          _rawRPM = _currentDirection ? -rpmMagnitude : rpmMagnitude;
+          _rawRPM = newRPM;
         }
         
-        _lastValidPulsePeriod = currentPeriod;
+        _lastValidPulsePeriod = period;
       }
     }
   }
-
+  
   _lastFgPulseTime = currentTime;
   _pulseCount++;
 }
-
 
 
 bool MotorDriver::isValidPulsePeriod(unsigned long period) {

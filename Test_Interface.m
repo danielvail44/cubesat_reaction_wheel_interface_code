@@ -20,9 +20,9 @@ write(port,'x',"char");
 
 for num = 1:N
     if num < 1000
-        r(num) = 1000;
+        r(num) = 2000;
     elseif num < 1500
-        r(num) = -1000;
+        r(num) = -2000;
     else
         %r(num) = 1400;
         r(num) = 0;
@@ -73,7 +73,7 @@ t = (0:N-1)*T;
 
 
 subplot(3,1,1)
-plot(t, yexp,t(1:length(t)-1), r(1:length(t)-1))
+plot(t, yexp,t(1:length(t)-1), r(1:length(t)-1), t, u)
 xlabel("Time (seconds)")
 ylabel("Speed (RPM)")
 ylim([-3000 3000])
