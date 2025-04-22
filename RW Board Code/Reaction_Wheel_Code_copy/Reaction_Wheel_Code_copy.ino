@@ -352,16 +352,14 @@ void processCommand(char cmd) {
     case 'x': // Run experiment
       Serial.println("Experiment started.....");
       getCMD();
-      // if (motor.isTorqueMode()) {
-      //   Serial.println("Running in TORQUE control mode");
-      // } else {
-      //   Serial.println("Running in SPEED control mode");
-      // }
+      if (motor.isTorqueMode()) {
+        Serial.println("Running in TORQUE control mode");
+      } else {
+        Serial.println("Running in SPEED control mode");
+      }
       running = true;
-      motor.setTargetTorque(cmdLog[0]);
+      motor.setTargetRPM(cmdLog[0]);
       motor.start();
-      
-
       break;
       
     // New commands for torque control
