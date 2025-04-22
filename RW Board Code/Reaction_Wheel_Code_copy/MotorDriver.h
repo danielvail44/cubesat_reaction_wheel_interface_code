@@ -112,27 +112,19 @@ private:
   
   // Motor state
   bool _motorRunning;
-  int _currentSpeed;
+  int32_t _currentSpeed;
   bool _currentDirection;
-  int _maxSpeed;
-  int _minSpeed;
-  int _rawRPM;
-  
-  // Region-specific PID parameters
-  float _kp_low, _ki_low, _kd_low;
-  
-  // Hysteresis control variables
-  bool _inZeroRegion;
-  float _lastOutput;
-  
-  // Recent values for median filtering
-  float _recentValues[5];
-  
+  int32_t _maxSpeed;
+  int32_t _minSpeed;
+  int32_t _rawRPM;
+  int32_t _firstPulses;
+  bool _lastWantedForward;
+  bool _reportedChange;
   // Savitzky-Golay filter variables
   static const int SG_WINDOW_SIZE = 7;  // Must be odd number
   float _sgBuffer[SG_WINDOW_SIZE];
-  int _sgBufferIndex;
-  bool _sgBufferFilled;
+  int _sgBufferIndex = 0;
+  bool _sgBufferFilled = false;
   
   // Savitzky-Golay filter methods
   float savitzkyGolayFilter(float newValue);
@@ -141,18 +133,18 @@ private:
   // Speed measurement variables
   volatile unsigned long _lastFgPulseTime;
   volatile unsigned long _fgPulsePeriod;
-  volatile uint16_t _pulseCount;
+  volatile int32_t _pulseCount;
   volatile float _currentRPM;
   volatile float _currentAcc;
   volatile float _lastRPM;
   unsigned long _lastValidPulsePeriod;
+  unsigned long _lastValidPulseTime;
   unsigned long _pulseTimeout;
   float _maxPulseDeviation;
-  int _pulsesPerRevolution;
-  int _motorPolePairs;
+  int32_t _pulsesPerRevolution;
+  int32_t _motorPolePairs;
   unsigned long _lastDirChange;
   bool _lastDir;
-  
   // Filter variables and objects
   Biquad *_primaryNotchFilter;
   Biquad *_secondaryNotchFilter;
@@ -164,13 +156,14 @@ private:
   float _freqMultiplier;
   float _secondaryFreqMultiplier;
   float _rpmHistory[MOVING_AVG_SIZE];  // History buffer for moving average
-  int _historyIndex;
+  int32_t _historyIndex;
   float _lastFilteredValues[5];
   bool _filtersInitialized;
   float _lastFilterUpdateRPM;
   
   // PID control variables
   float _kp, _ki, _kd;
+  float _kp_low, _ki_low, _kd_low; // Low-speed PID gains
   float _targetRPM;
   float _targetTorque;
   bool _torqueMode;
@@ -200,9 +193,9 @@ private:
   float _lastEstimatedRPM;
   
   // Advanced acceleration filtering
-  static const int ACC_WINDOW_SIZE = 15;
+  static const int32_t ACC_WINDOW_SIZE = 15;
   float _accelHistory[ACC_WINDOW_SIZE];
-  int _accelHistoryIndex;
+  int32_t _accelHistoryIndex;
   Biquad* _accelLowPass1;     // First stage LP filter
   Biquad* _accelLowPass2;     // Second stage LP filter
   
@@ -223,6 +216,7 @@ private:
   bool writeRegister(uint8_t reg, uint8_t value);
   SpiResponse readRegisterFull(uint8_t reg);
   uint8_t calculateParity(uint16_t command);
+  void debugDirectionControl();
 };
 
 #endif // MOTOR_DRIVER_H

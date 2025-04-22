@@ -4,7 +4,7 @@
 clc, clear all, close all
 
 % indicate duration of experiment
-experiment_duration_in_seconds = 15;
+experiment_duration_in_seconds = 10;
 
 %% begin serial port session
 
@@ -13,18 +13,36 @@ flush(port);
 
 %% run experiment using specified interval
 T = 0.004;
-N = 6000;
+N = 5000;
 r = zeros(1,N);
 % enter mode 1
 write(port,'x',"char");
 
+%for num = 1:N
+%    if num < 1000
+%        r(num) = 8000;
+%    elseif num < 2500
+%        r(num) = -8000;
+%    else
+%        %r(num) = 1400;
+%        r(num) = 8000;
+%    end
+    
+    %write(port, 6, "int8");
+
+%end
+
 for num = 1:N
-    if num < 1000
-        r(num) = 3000;
-    elseif num < 2500
-        r(num) = -3000;
+    if num < 750
+        r(num) = 15000;
+    elseif num < 2250
+        %r(num) = 1400;
+        r(num) = -15000;
+    elseif num < 2250+1500
+        %r(num) = 1400;
+        r(num) = 15000;
     else
-        r(num) = 2000;
+        r(num) = -15000;
     end
     
     %write(port, 6, "int8");
@@ -50,8 +68,10 @@ yexp = NaN(1,N);
 pause(experiment_duration_in_seconds)
 % collect experimental data
 for i = 1:N
-    yexp(i) = read(port,1,"int16");
     u(i) = read(port,1,"int16");
+    yexp(i) = read(port,1,"int16");
+    
+
 
 
 end
@@ -60,8 +80,8 @@ end
 
 t = (0:N-1)*T;
 
-yexp = yexp / 10;
-u = u / 10;
+%yexp = yexp / 10;
+%u = u / 10;
 
 %% plot task 1 results
 %yexp = abs(yexp);
@@ -70,21 +90,21 @@ u = u / 10;
 
 
 subplot(3,1,1)
-plot(t, yexp,t(1:length(t)-1), r(1:length(t)-1))
+plot(t, yexp,t(1:length(t)-1), r(1:length(t)-1));
 xlabel("Time (seconds)")
 ylabel("Speed (RPM)")
-ylim([-3000 3000])
+ylim([-16000 16000])
 grid on
 subplot(3,1,2)
-plot(t, movmean(u, 10))
-%ylim([-512 512])
+plot(t, movmean(u, 1))
+ylim([-550 550])
 xlabel("Time (seconds)")
 ylabel("Command")
 grid on
 subplot(3,1,3);
-plot(t(1:length(t)-1), 1/T*movmean(diff(yexp),10))
+plot(t(1:length(t)-1), 1/T*movmean(diff(yexp),100), t, r)
 ylabel("Acceleration (RPM/s)")
-ylim([-1000 1000])
+ylim([-2000 2000])
 grid on
 %%
 write(port,'b',"char");

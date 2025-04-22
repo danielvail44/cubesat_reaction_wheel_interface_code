@@ -10,7 +10,7 @@
 // 1. SYSTEM CONSTANTS AND EXPERIMENT SETTINGS
 //==============================================================================
 
-#define N 6000                    // Number of samples in experiment
+#define N 5000                    // Number of samples in experiment
 #define T 0.04                    // Sample period (seconds)
 #define THRESHOLD 12000           // Timer threshold (12MHz clock)
 #define DEFAULT_MOTOR_INERTIA 5.1e-7 // Default motor inertia in kg*m^2
@@ -165,9 +165,9 @@ void loop() {
   // Check for faults
   if (motor.checkFaults()) {
     if (!running) {
-      Serial.println("\n*** FAULT DETECTED");
-      Serial.print(micros()%10000000/10000.0);
-      Serial.println("ms");
+      // Serial.println("\n*** FAULT DETECTED");
+      // Serial.print(micros()%10000000/10000.0);
+      // Serial.println("ms");
     }
   }
   
@@ -332,7 +332,7 @@ void processCommand(char cmd) {
         float targetRpm = Serial.parseFloat();
         
         motor.setTargetRPM(targetRpm);
-        motor.enablePID(true);
+        //motor.enablePID(true);
         Serial.print("Target RPM set to: ");
         Serial.println(targetRpm);
       }
@@ -358,7 +358,7 @@ void processCommand(char cmd) {
         Serial.println("Running in SPEED control mode");
       }
       running = true;
-      motor.setSpeed(cmdLog[0]);
+      motor.setTargetRPM(cmdLog[0]);
       motor.start();
       break;
       
@@ -388,7 +388,7 @@ void processCommand(char cmd) {
         float targetTorque = Serial.parseFloat();
         
         motor.setTargetTorque(targetTorque);
-        motor.enablePID(true);
+        //motor.enablePID(true);
         Serial.print("Target torque set to: ");
         Serial.print(targetTorque);
         Serial.println(" mNm");
@@ -561,7 +561,7 @@ void processCommandPacket() {
     // Verify checksum (simple XOR of all previous bytes)
     uint8_t calculatedChecksum = packet[0] ^ packet[1] ^ packet[2] ^ packet[3];
     if (calculatedChecksum != packet[4]) {
-      Serial.println("Command checksum error");
+      //Serial.println("Command checksum error");
       return;
     }
 
