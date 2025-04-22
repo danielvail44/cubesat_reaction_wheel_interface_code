@@ -165,9 +165,9 @@ void loop() {
   // Check for faults
   if (motor.checkFaults()) {
     if (!running) {
-      Serial.println("\n*** FAULT DETECTED");
-      Serial.print(micros()%10000000/10000.0);
-      Serial.println("ms");
+      // Serial.println("\n*** FAULT DETECTED");
+      // Serial.print(micros()%10000000/10000.0);
+      // Serial.println("ms");
     }
   }
   
@@ -352,14 +352,16 @@ void processCommand(char cmd) {
     case 'x': // Run experiment
       Serial.println("Experiment started.....");
       getCMD();
-      if (motor.isTorqueMode()) {
-        Serial.println("Running in TORQUE control mode");
-      } else {
-        Serial.println("Running in SPEED control mode");
-      }
+      // if (motor.isTorqueMode()) {
+      //   Serial.println("Running in TORQUE control mode");
+      // } else {
+      //   Serial.println("Running in SPEED control mode");
+      // }
       running = true;
-      motor.setTargetRPM(cmdLog[0]);
+      motor.setTargetTorque(cmdLog[0]);
       motor.start();
+      
+
       break;
       
     // New commands for torque control

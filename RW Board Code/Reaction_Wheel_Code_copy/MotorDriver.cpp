@@ -236,8 +236,9 @@ void MotorDriver::start() {
     return;  // Can't start if there's a fault
   }
 
-  _targetRPM = _rawRPM;
-  _currentRPM = _rawRPM;
+  _targetRPM = 0;
+  _currentRPM = 0;
+  _rawRPM = 0;
 
 
   if (_torqueMode) { _targetRPM = _currentRPM; }
@@ -399,7 +400,7 @@ void MotorDriver::setDirection(bool directionCCW) {
   if (_lastDir != directionCCW) {
 
     // Record direction change time
-    _currentDirection = directionCCW;
+    //_currentDirection = directionCCW;
     _lastDirChange = millis();
 
     // Ensure register write is successful
@@ -433,7 +434,6 @@ void MotorDriver::setDirection(bool directionCCW) {
 
     // Reset measurement variables
     _lastFgPulseTime = 0;
-    _rawRPM = 0;
     _rawRPM = 0;
     _integral = 0;
 
@@ -553,9 +553,10 @@ float MotorDriver::setTargetRPM(float targetRPM) {
 
 float MotorDriver::setTargetTorque(float targetTorque) {
   _targetTorque = targetTorque;
+  //_targetRPM = _currentRPM;
 
-
-  return _currentSpeed;
+  //return _currentSpeed;
+  return _rawRPM;
 }
 
 void MotorDriver::enablePID(bool enable) {
@@ -645,17 +646,20 @@ void MotorDriver::setSpeed(int speed) {
   bool wantReverse = speed < 0;
 
   // Record direction change attempts for debugging
-  if (((_lastWantedForward && wantReverse) || (!_lastWantedForward && wantForward)) && !_reportedChange && (((millis() - _lastDirChange) > 500) && (_rawRPM < constrain(abs(_rawRPM), -1, 1) * 400))) {
-    // Serial.print("Direction change requested at time ");
+  if (((_lastWantedForward && wantReverse) || (!_lastWantedForward && wantForward))
+      && !_reportedChange
+      && (((millis() - _lastDirChange) > 500)
+          && (abs(_currentRPM) < 400))) {  // Serial.print("Direction change requested at time ");
     // Serial.print(millis());
     // Serial.print("ms from ");
     // Serial.print(_lastWantedForward ? "forward" : "reverse");
     // Serial.print(" to ");
     // Serial.println(wantForward ? "forward" : "reverse");
+    //_currentDirection = !_currentDirection;
     _lastWantedForward = wantForward;
     _reportedChange = true;
   } else if (_lastWantedForward == wantForward) {
-    //_reportedChange = false;
+    _reportedChange = false;
   }
 
 
@@ -670,12 +674,13 @@ void MotorDriver::setSpeed(int speed) {
 
       // Change direction register
       bool newDirection = wantReverse;
-      writeRegister(CONTROL_REG_7, newDirection ? 0x01 : 0x00);
+      // writeRegister(CONTROL_REG_7, newDirection ? 0x01 : 0x00);
+      //setDirection(newDirection);
       _currentDirection = newDirection;
-      _lastDirChange = millis();
+      //_lastDirChange = millis();
 
       // Use the same brake/drive logic instead of bypassing it
-      if ((speed >= 0 && _rawRPM >= -600) || (speed <= 0 && _rawRPM <= 600)) {
+      if ((speed >= 0 && _currentRPM >= -600) || (speed <= 0 && _currentRPM <= 600)) {
         TCC0->CCB[0].reg = abs(speed);  // Drive PWM
         TCC1->CCB[0].reg = 0;           // No braking
       } else {
@@ -688,7 +693,7 @@ void MotorDriver::setSpeed(int speed) {
     else {
       // Release brake if engaged
       // When speed and RPM are in the same direction (or RPM is near zero), use drive
-      if ((speed >= 0 && _rawRPM >= -800) || (speed <= 0 && _rawRPM <= 800)) {
+      if ((speed >= 0 && _currentRPM >= -700) || (speed <= 0 && _currentRPM <= 700)) {
         setDirection(speed < 0);
         TCC0->CCB[0].reg = abs(speed);  // Drive PWM
         TCC1->CCB[0].reg = 0;           // No braking
@@ -714,8 +719,16 @@ void MotorDriver::setSpeed(int speed) {
 
 void MotorDriver::updatePID() {
 
+
   unsigned long currentTime = micros();
   float deltaT = (currentTime - _lastPIDUpdate) / 1000000.0;
+  // Update RPM and acceleration
+  noInterrupts();
+  int32_t localRawRPM = _rawRPM;
+  interrupts();
+  _lastRPM = _currentRPM;
+  _currentRPM = applyFilters(localRawRPM);
+  _currentAcc = (_currentRPM - _lastRPM) / deltaT;
 
   if (!_motorRunning || deltaT <= 0 || !_pidEnabled) {
     return;
@@ -773,10 +786,6 @@ void MotorDriver::updatePID() {
   _lastPIDUpdate = currentTime;
 
 
-  // Update RPM and acceleration
-  _lastRPM = _currentRPM;
-  _currentRPM = applyFilters(_rawRPM);
-  _currentAcc = (_currentRPM - _lastRPM) / deltaT;
 
 
   // Calculate error
@@ -921,147 +930,65 @@ float MotorDriver::applyFilters(float rawRPM) {
 //==============================================================================
 
 void MotorDriver::processFGOUTpulse() {
+  // Save values locally to minimize time in critical section
   unsigned long currentTime = micros();
-  // DEBUGGING
 
-  if ((_firstPulses) > 0) {
-    // Serial.print("PULSE #");
-    // Serial.print(_pulseCount);
-    // Serial.print(" Time: ");
-    // Serial.print(currentTime);
-    // Serial.print(" Last: ");
-    // Serial.print(_lastFgPulseTime);
-    // Serial.print(" Period: ");
-    // Serial.print(currentTime - _lastFgPulseTime);
-    // Serial.print(" RPM raw: ");
-    // Serial.println(_rawRPM);
-    _firstPulses--;
-  }
+  // Disable interrupts before accessing shared variables
+  noInterrupts();
 
-  // // Direction transition state machine
-  // static bool inTransition = false;
-  // static unsigned long transitionStartTime = 0;
-  // static float lastStableRPM = 0;
-  // static int transitionPhase = 0; // 0=pre-stop, 1=stopping, 2=accelerating
-  // static unsigned long lastPhaseChange = 0;
-
-  // // Check for direction change request
-  // if (millis() - _lastDirChange < 200 && !inTransition) {
-  //   // Begin transition - capture stable RPM for blending
-  //   inTransition = true;
-  //   transitionStartTime = millis();
-  //   lastStableRPM = _rawRPM;
-  //   transitionPhase = 0;
-  //   lastPhaseChange = millis();
-
-  //   // Reset validation parameters for clean slate
-  //   _lastValidPulsePeriod = 0;
-
-  //   // Clear filter history to prevent contamination
-  //   for (int i = 0; i < MOVING_AVG_SIZE; i++) {
-  //     _rpmHistory[i] = 0;
-  //   }
-
-  //   _integral = 0; // Reset PID integral term
-  //   Serial.println("Direction transition started");
-  // }
-
-  // During transition, synthesize RPM values instead of using unreliable pulses
-  // if (inTransition) {
-  //   unsigned long currentPhaseTime = millis() - lastPhaseChange;
-
-  //   // Phase 0: Pre-stop verification (50ms) - ensure we're actually stopping
-  //   if (transitionPhase == 0 && currentPhaseTime > 50) {
-  //     transitionPhase = 1;
-  //     lastPhaseChange = millis();
-  //   }
-  //   // Phase 1: Deceleration to zero (400ms)
-  //   else if (transitionPhase == 1) {
-  //     float ratio = max(0.0f, 1.0f - (currentPhaseTime / 400.0f));
-  //     _rawRPM = lastStableRPM * ratio;
-
-  //     // Advance to acceleration phase when close to zero or timeout
-  //     if (abs(_rawRPM) < 50 || currentPhaseTime > 400) {
-  //       transitionPhase = 2;
-  //       lastPhaseChange = millis();
-  //       _rawRPM = 0; // Force exact zero before changing direction
-  //     }
-  //   }
-  //   // Phase 2: Acceleration in new direction (500ms)
-  //   else if (transitionPhase == 2) {
-  //     float ratio = min(1.0f, (currentPhaseTime / 500.0f));
-
-  //     // Use sigmoid function for smoother acceleration curve
-  //     ratio = ratio * ratio * (3 - 2 * ratio); // Smoothstep function
-
-  //     // Target speed based on register-set direction only
-  //     float targetRPM = _currentDirection ? -800 : 800; // Moderate target speed
-  //     _rawRPM = targetRPM * ratio;
-
-  //     // End transition after 500ms or when measuring valid pulses in new direction
-  //     if (currentPhaseTime > 500) {
-  //       inTransition = false;
-  //       Serial.println("Direction transition complete");
-  //     }
-  //   }
-
-  //   // Skip actual pulse processing during transition
-  //   _lastFgPulseTime = currentTime;
-  //   return;
-  // }
-
-  // Normal pulse processing when not in transition
+  // Normal pulse processing
   if (_lastFgPulseTime > 0) {
     unsigned long period = currentTime - _lastFgPulseTime;
 
     // Only process pulses within reasonable time range
     if (period > 500 && period < 10000000) {
-      // Calculate RPM magnitude (always positive)
+      // Calculate RPM magnitude
       float rpmMagnitude = (60.0 * 1000000.0) / (period * _pulsesPerRevolution);
 
-      // Apply direction based ONLY on register state
+      // Apply direction
       float newRPM = _currentDirection ? -rpmMagnitude : rpmMagnitude;
 
-      // Validate reading more strictly - especially after recent direction change
-      bool isRecentDirectionChange = (millis() - _lastDirChange < 20);
-
-      float ratio = (float)newRPM / (float)_rawRPM;
-      if (abs(ratio-2.0) < 0.02){
-        newRPM = newRPM/2;
-        // Serial.println("fixed");
-        // Serial.println(ratio);
+      // ADDED: Absolute limit check
+      if (abs(newRPM) > 20000) {
+        // Skip this reading - clearly an error
+        _lastFgPulseTime = currentTime;
+        _pulseCount++;
+        interrupts();
+        return;
       }
-      if (abs(ratio-3.0) < 0.02){
-        newRPM = newRPM/3;
-        // Serial.println("fixed");
-        // Serial.println(ratio);
-      }
-      if (abs((1.0/ratio)-2.0) < 0.02){
-        newRPM = newRPM*2;
-        // Serial.println("fixed");
-        // Serial.println(ratio);
-      }
-      if (abs((1.0/ratio)-3.0) < 0.02){
-        newRPM = newRPM*3;
-        // Serial.println("fixed");
-        // Serial.println(ratio);
-      }
-      
 
+      // ADDED: Check for harmonic spikes
+      // if (_rawRPM != 0) {
+      //   float ratio = newRPM / _rawRPM;
+      //   if (abs(ratio - 2.0) < 0.2) newRPM = newRPM / 2;
+      //   else if (abs(ratio - 3.0) < 0.2) newRPM = newRPM / 3;
 
+      //   // ADDED: Simple rate limiter
+      //   if (abs(newRPM - _rawRPM) > 5000) {
+      //     _lastFgPulseTime = currentTime;
+      //     _pulseCount++;
+      //     interrupts();
+      //     return;
+      //   }
+      // }
 
-      if (_lastValidPulsePeriod == 0 || abs(_currentRPM < 200) || (period > _lastValidPulsePeriod * (isRecentDirectionChange ? .05 : .7) && period < _lastValidPulsePeriod * (isRecentDirectionChange ? 5.5 : 1.3)) && period > 400 && abs(newRPM) > 20) {
-        _rawRPM = newRPM;  // Always use the latest reading
+      // Your requested validation logic with syntax fix
+      bool isRecentDirectionChange = (millis() - _lastDirChange < 200);
+      if (_lastValidPulsePeriod == 0 || abs(_currentRPM) < 200 ||  // Fixed parentheses placement
+          ((period > _lastValidPulsePeriod * (isRecentDirectionChange ? 0.05 : 0.6) && period < _lastValidPulsePeriod * (isRecentDirectionChange ? 8.0 : 1.4)) && period > 800 && abs(newRPM) > 20)) {
+
+        _rawRPM = newRPM;
         _lastValidPulsePeriod = period;
         _lastValidPulseTime = millis();
-
-        // After direction change, add stronger filtering at first
       }
     }
   }
 
   _lastFgPulseTime = currentTime;
   _pulseCount++;
+
+  // Re-enable interrupts
+  interrupts();
 }
 
 

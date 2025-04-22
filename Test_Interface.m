@@ -31,18 +31,18 @@ write(port,'x',"char");
     %write(port, 6, "int8");
 
 %end
-
+speed = 10000;
 for num = 1:N
     if num < 750
-        r(num) = 15000;
+        r(num) = speed;
     elseif num < 2250
         %r(num) = 1400;
-        r(num) = -15000;
-    elseif num < 2250+1500
+        r(num) = speed;
+    elseif num < 2250+500
         %r(num) = 1400;
-        r(num) = 15000;
+        r(num) = -speed;
     else
-        r(num) = -15000;
+        r(num) = -speed;
     end
     
     %write(port, 6, "int8");
@@ -90,7 +90,7 @@ t = (0:N-1)*T;
 
 
 subplot(3,1,1)
-plot(t, yexp,t(1:length(t)-1), r(1:length(t)-1));
+plot(t, yexp,t(1:length(t)-1), r(1:length(t)-1), t, u);
 xlabel("Time (seconds)")
 ylabel("Speed (RPM)")
 ylim([-16000 16000])

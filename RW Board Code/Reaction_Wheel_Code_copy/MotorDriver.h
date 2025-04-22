@@ -116,7 +116,7 @@ private:
   bool _currentDirection;
   int32_t _maxSpeed;
   int32_t _minSpeed;
-  int32_t _rawRPM;
+  volatile int32_t _rawRPM;
   int32_t _firstPulses;
   bool _lastWantedForward;
   bool _reportedChange;
